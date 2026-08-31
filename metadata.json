@@ -1,0 +1,6 @@
+{
+  "name": "CelMart - Sistema de Gestión de Taller",
+  "description": "Sistema de gestión técnica y control de reparaciones para CelMart con interfaz Obsidian Minimalist estilo Cursor IDE.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
