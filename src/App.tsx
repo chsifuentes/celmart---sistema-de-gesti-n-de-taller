@@ -13,8 +13,10 @@ import {
   Client,
   WorkshopConfig,
   TechNote,
-  AssignedPart
+  AssignedPart,
+  WhatsAppTemplateKey
 } from './types';
+import { defaultWhatsAppTemplates } from './lib/whatsapp';
 import { Sidebar, TabType } from './components/Sidebar';
 import { Header } from './components/Header';
 import { MetricCards } from './components/MetricCards';
@@ -39,12 +41,26 @@ export default function App() {
   // Navigation State
   const [activeTab, setActiveTab] = useState<TabType>('dashboard');
   const [collapsedSidebar, setCollapsedSidebar] = useState(false);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [globalSearch, setGlobalSearch] = useState('');
   const [tableStatusFilter, setTableStatusFilter] = useState<string>('Todos');
 
   // Database Data States
   const [orders, setOrders] = useState<Order[]>([]);
-  const [technicians, setTechnicians] = useState<Technician[]>(initialTechnicians);
+  const [technicians, setTechnicians] = useState<Technician[]>(() => {
+    try {
+      const saved = localStorage.getItem('celmart_technicians');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return parsed;
+        }
+      }
+    } catch (e) {
+      console.warn('Error cargando técnicos guardados:', e);
+    }
+    return initialTechnicians;
+  });
   const [inventory, setInventory] = useState<InventoryItem[]>([]);
   const [movements, setMovements] = useState<InventoryMovement[]>(initialInventoryMovements);
   const [clients, setClients] = useState<Client[]>([]);
@@ -52,7 +68,15 @@ export default function App() {
     try {
       const saved = localStorage.getItem('celmart_workshop_config');
       if (saved) {
-        return { ...initialWorkshopConfig, ...JSON.parse(saved) };
+        const parsed = JSON.parse(saved);
+        return {
+          ...initialWorkshopConfig,
+          ...parsed,
+          plantillasWhatsApp: {
+            ...defaultWhatsAppTemplates,
+            ...(parsed.plantillasWhatsApp || {})
+          }
+        };
       }
     } catch (e) {
       console.warn('Error cargando configuración guardada:', e);
@@ -66,6 +90,16 @@ export default function App() {
   const [selectedOrderForDrawer, setSelectedOrderForDrawer] = useState<Order | null>(null);
   const [selectedOrderForPrint, setSelectedOrderForPrint] = useState<Order | null>(null);
   const [selectedOrderForWhatsApp, setSelectedOrderForWhatsApp] = useState<Order | null>(null);
+  const [selectedWhatsAppTemplateKey, setSelectedWhatsAppTemplateKey] = useState<WhatsAppTemplateKey | undefined>(undefined);
+
+  const handleOpenWhatsApp = (order: Order, templateKey?: WhatsAppTemplateKey) => {
+    setSelectedOrderForWhatsApp(order);
+    setSelectedWhatsAppTemplateKey(templateKey);
+  };
+
+  const handleWhatsAppSent = (orderId: string, logNote: string) => {
+    handleAddNoteToOrder(orderId, logNote, 'general');
+  };
 
   // 1. Cargar datos iniciales desde Supabase
   const fetchData = async () => {
@@ -146,6 +180,44 @@ export default function App() {
           }))
         );
       }
+
+      // Cargar Técnicos desde Supabase
+      const { data: tecnicosData } = await supabase.from('tecnicos').select('*');
+      if (tecnicosData && tecnicosData.length > 0) {
+        const mappedTechs: Technician[] = tecnicosData.map((t: any) => ({
+          id: t.id,
+          nombre: t.nombre,
+          iniciales: t.iniciales || t.nombre.split(' ').map((n: string) => n[0]).join('').slice(0, 2).toUpperCase(),
+          especialidad: t.especialidad || 'General',
+          estado: t.estado || 'Disponible',
+          ordenesActivas: t.ordenes_activas !== undefined ? t.ordenes_activas : (t.ordenesActivas || 0),
+          capacidadMaxima: t.capacidad_maxima !== undefined ? t.capacidad_maxima : (t.capacidadMaxima || 5),
+          horasPromedio: t.horas_promedio || 2.5,
+          efectividad: t.efectividad || 98,
+          salarioFijo: t.salario_fijo || 16000,
+          avatarBg: t.avatar_bg || 'bg-blue-600',
+        }));
+        setTechnicians(mappedTechs);
+        localStorage.setItem('celmart_technicians', JSON.stringify(mappedTechs));
+      }
+
+      // Cargar Movimientos de Inventario desde Supabase
+      const { data: movsData } = await supabase.from('movimientos_inventario').select('*').order('created_at', { ascending: false });
+      if (movsData && movsData.length > 0) {
+        setMovements(
+          movsData.map((m: any) => ({
+            id: m.id,
+            repuestoNombre: m.repuesto_nombre || m.repuestoNombre,
+            codigoOrden: m.codigo_orden || m.codigoOrden,
+            tipo: m.tipo,
+            cantidad: Number(m.cantidad),
+            autor: m.autor,
+            tiempo: m.tiempo || 'Reciente',
+          }))
+        );
+      } else {
+        setMovements([]);
+      }
     } catch (err) {
       console.error('Error conectando con Supabase:', err);
     } finally {
@@ -224,6 +296,132 @@ export default function App() {
     await supabase.from('ordenes').update({ estado: newStatus }).eq('id', orderId);
   };
 
+  // Eliminar orden definitivamente de la base de datos
+  const handleDeleteOrder = async (orderId: string) => {
+    setOrders((prev) => prev.filter((o) => o.id !== orderId));
+    if (selectedOrderForDrawer?.id === orderId) setSelectedOrderForDrawer(null);
+    if (selectedOrderForPrint?.id === orderId) setSelectedOrderForPrint(null);
+    if (selectedOrderForWhatsApp?.id === orderId) setSelectedOrderForWhatsApp(null);
+
+    const { error } = await supabase.from('ordenes').delete().eq('id', orderId);
+    if (error) {
+      console.error('Error eliminando orden:', error);
+    }
+  };
+
+  // Gestión de Técnicos: CRUD completo y actualizaciones dinámicas
+  const handleAddTechnician = async (newTechData: Omit<Technician, 'id' | 'ordenesActivas'>) => {
+    const initials = newTechData.nombre
+      .trim()
+      .split(' ')
+      .filter(Boolean)
+      .map((w) => w[0].toUpperCase())
+      .join('')
+      .slice(0, 2) || 'TC';
+
+    const colors = ['bg-blue-600', 'bg-emerald-600', 'bg-purple-600', 'bg-amber-600', 'bg-rose-600', 'bg-cyan-600'];
+    const randomColor = colors[Math.floor(Math.random() * colors.length)];
+
+    const newTech: Technician = {
+      id: `tech-${Date.now()}`,
+      ...newTechData,
+      iniciales: initials,
+      ordenesActivas: 0,
+      horasPromedio: 2.5,
+      efectividad: 98.5,
+      salarioFijo: newTechData.salarioFijo || 16000,
+      avatarBg: randomColor,
+    };
+
+    const updated = [...technicians, newTech];
+    setTechnicians(updated);
+    try {
+      localStorage.setItem('celmart_technicians', JSON.stringify(updated));
+    } catch (e) {
+      console.warn('Error guardando en localStorage:', e);
+    }
+
+    await supabase.from('tecnicos').insert([
+      {
+        id: newTech.id,
+        nombre: newTech.nombre,
+        iniciales: newTech.iniciales,
+        especialidad: newTech.especialidad,
+        estado: newTech.estado,
+        ordenes_activas: newTech.ordenesActivas,
+        capacidad_maxima: newTech.capacidadMaxima,
+        horas_promedio: newTech.horasPromedio,
+        efectividad: newTech.efectividad,
+        salario_fijo: newTech.salarioFijo,
+        avatar_bg: newTech.avatarBg,
+      },
+    ]);
+  };
+
+  const handleEditTechnician = async (updatedTech: Technician) => {
+    const initials = updatedTech.nombre
+      .trim()
+      .split(' ')
+      .filter(Boolean)
+      .map((w) => w[0].toUpperCase())
+      .join('')
+      .slice(0, 2) || updatedTech.iniciales || 'TC';
+
+    const finalTech = { ...updatedTech, iniciales: initials };
+    const updated = technicians.map((t) => (t.id === finalTech.id ? finalTech : t));
+    setTechnicians(updated);
+    try {
+      localStorage.setItem('celmart_technicians', JSON.stringify(updated));
+    } catch (e) {
+      console.warn('Error guardando en localStorage:', e);
+    }
+
+    await supabase.from('tecnicos').update({
+      nombre: finalTech.nombre,
+      iniciales: finalTech.iniciales,
+      especialidad: finalTech.especialidad,
+      estado: finalTech.estado,
+      capacidad_maxima: finalTech.capacidadMaxima,
+      salario_fijo: finalTech.salarioFijo,
+    }).eq('id', finalTech.id);
+  };
+
+  const handleDeleteTechnician = async (techId: string) => {
+    const updated = technicians.filter((t) => t.id !== techId);
+    setTechnicians(updated);
+    try {
+      localStorage.setItem('celmart_technicians', JSON.stringify(updated));
+    } catch (e) {
+      console.warn('Error guardando en localStorage:', e);
+    }
+
+    await supabase.from('tecnicos').delete().eq('id', techId);
+  };
+
+  const handleUpdateTechnicianStatus = async (techId: string, newStatus: Technician['estado']) => {
+    const updated = technicians.map((t) => (t.id === techId ? { ...t, estado: newStatus } : t));
+    setTechnicians(updated);
+    try {
+      localStorage.setItem('celmart_technicians', JSON.stringify(updated));
+    } catch (e) {
+      console.warn('Error guardando en localStorage:', e);
+    }
+
+    await supabase.from('tecnicos').update({ estado: newStatus }).eq('id', techId);
+  };
+
+  const handleUpdateTechnicianSpecialty = async (techId: string, newSpecialty: string) => {
+    const updated = technicians.map((t) => (t.id === techId ? { ...t, especialidad: newSpecialty } : t));
+    setTechnicians(updated);
+    try {
+      localStorage.setItem('celmart_technicians', JSON.stringify(updated));
+    } catch (e) {
+      console.warn('Error guardando en localStorage:', e);
+    }
+
+    await supabase.from('tecnicos').update({ especialidad: newSpecialty }).eq('id', techId);
+  };
+
   const handleAddNoteToOrder = (orderId: string, content: string, tipo: TechNote['tipo'] = 'diagnostico') => {
     const now = new Date();
     const formattedDate = `${now.getDate()} Ago ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
@@ -233,7 +431,7 @@ export default function App() {
     );
   };
 
-  const handleAssignPartToOrder = (orderId: string, part: AssignedPart) => {
+  const handleAssignPartToOrder = async (orderId: string, part: AssignedPart) => {
     setOrders((prev) =>
       prev.map((o) => {
         if (o.id === orderId) {
@@ -247,6 +445,30 @@ export default function App() {
         return o;
       })
     );
+
+    // Registrar movimiento real
+    const newMovement: InventoryMovement = {
+      id: `mov-${Date.now()}`,
+      repuestoNombre: part.nombre,
+      codigoOrden: orderId,
+      tipo: 'consumo',
+      cantidad: -part.cantidad,
+      autor: 'Taller',
+      tiempo: 'Ahora',
+    };
+    setMovements((prev) => [newMovement, ...prev]);
+
+    await supabase.from('movimientos_inventario').insert([
+      {
+        id: newMovement.id,
+        repuesto_nombre: newMovement.repuestoNombre,
+        codigo_orden: newMovement.codigoOrden,
+        tipo: newMovement.tipo,
+        cantidad: newMovement.cantidad,
+        autor: newMovement.autor,
+        tiempo: newMovement.tiempo,
+      },
+    ]);
   };
 
   const handleUpdateInventoryStock = async (itemId: string, delta: number) => {
@@ -255,6 +477,28 @@ export default function App() {
     const newStock = Math.max(0, item.stockActual + delta);
     setInventory((prev) => prev.map((i) => (i.id === itemId ? { ...i, stockActual: newStock } : i)));
     await supabase.from('inventario').update({ stock_actual: newStock }).eq('id', itemId);
+
+    // Registrar movimiento real de inventario
+    const newMovement: InventoryMovement = {
+      id: `mov-${Date.now()}`,
+      repuestoNombre: item.nombre,
+      tipo: delta > 0 ? 'reabastecimiento' : 'consumo',
+      cantidad: delta,
+      autor: 'Administrador',
+      tiempo: 'Ahora',
+    };
+    setMovements((prev) => [newMovement, ...prev]);
+
+    await supabase.from('movimientos_inventario').insert([
+      {
+        id: newMovement.id,
+        repuesto_nombre: newMovement.repuestoNombre,
+        tipo: newMovement.tipo,
+        cantidad: newMovement.cantidad,
+        autor: newMovement.autor,
+        tiempo: newMovement.tiempo,
+      },
+    ]);
   };
 
   const handleAddInventoryItem = async (newItem: Omit<InventoryItem, 'id'>) => {
@@ -311,6 +555,17 @@ export default function App() {
     }
   };
 
+  // Calcular carga activa real de cada técnico según órdenes no finalizadas
+  const techniciansWithRealLoad = technicians.map((tech) => {
+    const activeOrders = orders.filter(
+      (o) => o.tecnico?.nombre === tech.nombre && o.estado !== 'Entregado' && o.estado !== 'Listo'
+    ).length;
+    return {
+      ...tech,
+      ordenesActivas: activeOrders,
+    };
+  });
+
   if (!isAuthenticated) {
     return <LoginView onLogin={() => setIsAuthenticated(true)} />;
   }
@@ -321,12 +576,15 @@ export default function App() {
         activeTab={activeTab}
         setActiveTab={(tab) => {
           setActiveTab(tab);
+          setMobileMenuOpen(false);
           if (globalSearch) setGlobalSearch('');
         }}
         collapsed={collapsedSidebar}
         setCollapsed={setCollapsedSidebar}
         activeOrdersCount={orders.filter((o) => o.estado !== 'Entregado').length}
         lowStockCount={lowStockCount}
+        mobileOpen={mobileMenuOpen}
+        onCloseMobile={() => setMobileMenuOpen(false)}
       />
       <div className="flex-1 flex flex-col min-w-0 h-full overflow-hidden">
         <Header
@@ -335,6 +593,7 @@ export default function App() {
           onOpenNewOrder={() => setIsNewOrderModalOpen(true)}
           urgentOrdersCount={urgentOrdersCount}
           onLogout={() => setIsAuthenticated(false)}
+          onToggleMobileMenu={() => setMobileMenuOpen(!mobileMenuOpen)}
         />
         <main className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-6">
           {activeTab === 'dashboard' && (
@@ -348,12 +607,24 @@ export default function App() {
                     setSelectedFilter={setTableStatusFilter}
                     onSelectOrder={(order) => setSelectedOrderForDrawer(order)}
                     onPrintTicket={(order) => setSelectedOrderForPrint(order)}
-                    onOpenWhatsApp={(order) => setSelectedOrderForWhatsApp(order)}
+                    onOpenWhatsApp={handleOpenWhatsApp}
                     onUpdateOrderStatus={handleUpdateOrderStatus}
+                    onDeleteOrder={handleDeleteOrder}
                   />
                 </div>
                 <div className="space-y-6">
-                  <TechniciansPanel technicians={technicians} />
+                  <TechniciansPanel
+                    technicians={techniciansWithRealLoad}
+                    onSelectTechnician={(name) => {
+                      setGlobalSearch(name);
+                      setActiveTab('dashboard');
+                    }}
+                    onAddTechnician={handleAddTechnician}
+                    onEditTechnician={handleEditTechnician}
+                    onDeleteTechnician={handleDeleteTechnician}
+                    onUpdateTechnicianStatus={handleUpdateTechnicianStatus}
+                    onUpdateTechnicianSpecialty={handleUpdateTechnicianSpecialty}
+                  />
                   <InventoryMovementsPanel movements={movements} onGoToInventory={() => setActiveTab('inventario')} />
                 </div>
               </div>
@@ -366,6 +637,7 @@ export default function App() {
                 orders={orders}
                 onAddClient={handleAddClient}
                 onSelectClientOrders={(name) => { setGlobalSearch(name); setActiveTab('dashboard'); }}
+                onOpenWhatsApp={handleOpenWhatsApp}
               />
             </div>
           )}
@@ -398,7 +670,7 @@ export default function App() {
         onClose={() => setIsNewOrderModalOpen(false)}
         onSaveOrder={handleSaveNewOrder}
         existingClients={clients}
-        technicians={technicians}
+        technicians={techniciansWithRealLoad}
         nextOrderNumber={nextOrderNumber}
       />
       <DeviceDetailDrawer
@@ -409,7 +681,7 @@ export default function App() {
         onAddNote={handleAddNoteToOrder}
         onAssignPart={handleAssignPartToOrder}
         onPrintTicket={(order) => setSelectedOrderForPrint(order)}
-        onOpenWhatsApp={(order) => setSelectedOrderForWhatsApp(order)}
+        onOpenWhatsApp={handleOpenWhatsApp}
         inventory={inventory}
       />
       <ThermalReceiptModal
@@ -421,8 +693,13 @@ export default function App() {
       <WhatsAppPreviewModal
         order={selectedOrderForWhatsApp}
         isOpen={!!selectedOrderForWhatsApp}
-        onClose={() => setSelectedOrderForWhatsApp(null)}
+        onClose={() => {
+          setSelectedOrderForWhatsApp(null);
+          setSelectedWhatsAppTemplateKey(undefined);
+        }}
         config={config}
+        initialTemplateKey={selectedWhatsAppTemplateKey}
+        onSentWhatsApp={handleWhatsAppSent}
       />
     </div>
   );

@@ -9,9 +9,13 @@ import {
   MessageSquare,
   Percent,
   Loader2,
-  AlertCircle
+  AlertCircle,
+  RotateCcw,
+  Sparkles,
+  Copy
 } from 'lucide-react';
-import { WorkshopConfig } from '../types';
+import { WorkshopConfig, WhatsAppTemplateKey } from '../types';
+import { defaultWhatsAppTemplates } from '../lib/whatsapp';
 
 interface SettingsViewProps {
   config: WorkshopConfig;
@@ -19,7 +23,18 @@ interface SettingsViewProps {
 }
 
 export const SettingsView: React.FC<SettingsViewProps> = ({ config, onSaveConfig }) => {
-  const [formData, setFormData] = useState<WorkshopConfig>(config);
+  // Garantizar que existan las 4 plantillas
+  const [formData, setFormData] = useState<WorkshopConfig>(() => {
+    return {
+      ...config,
+      plantillasWhatsApp: {
+        ...defaultWhatsAppTemplates,
+        ...(config.plantillasWhatsApp || {})
+      }
+    };
+  });
+
+  const [activeTemplateTab, setActiveTemplateTab] = useState<WhatsAppTemplateKey>('cambioEstatus');
   const [isSaving, setIsSaving] = useState(false);
   const [isSaved, setIsSaved] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -29,7 +44,13 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ config, onSaveConfig
 
   // Sincronizar el formulario si cambia la configuración externa
   useEffect(() => {
-    setFormData(config);
+    setFormData({
+      ...config,
+      plantillasWhatsApp: {
+        ...defaultWhatsAppTemplates,
+        ...(config.plantillasWhatsApp || {})
+      }
+    });
   }, [config]);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -71,6 +92,34 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ config, onSaveConfig
     }, 1200);
   };
 
+  const handleRestoreTemplateDefaults = () => {
+    setFormData(prev => ({
+      ...prev,
+      plantillasWhatsApp: {
+        ...defaultWhatsAppTemplates
+      }
+    }));
+  };
+
+  const handleInsertVariable = (variableName: string) => {
+    const currentVal = formData.plantillasWhatsApp?.[activeTemplateTab] || '';
+    const updatedVal = currentVal + ` {{${variableName}}}`;
+    setFormData(prev => ({
+      ...prev,
+      plantillasWhatsApp: {
+        ...prev.plantillasWhatsApp,
+        [activeTemplateTab]: updatedVal
+      }
+    }));
+  };
+
+  const templateTabs: { key: WhatsAppTemplateKey; title: string; subtitle: string; icon: string }[] = [
+    { key: 'ingreso', title: 'Ingreso / Recepción', subtitle: 'Recepción del equipo en mostrador', icon: '📥' },
+    { key: 'cambioEstatus', title: 'Cambio de Estatus', subtitle: 'Diagnóstico, repuesto o reparación', icon: '🔄' },
+    { key: 'listoEntrega', title: 'Listo para Entrega', subtitle: 'Equipo reparado y verificado', icon: '🎉' },
+    { key: 'cotizacionPendiente', title: 'Cotización Pendiente', subtitle: 'Presupuesto para aprobación', icon: '📋' },
+  ];
+
   return (
     <div className="max-w-4xl space-y-6">
       {/* Header */}
@@ -78,7 +127,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ config, onSaveConfig
         <div>
           <h1 className="text-xl font-bold text-zinc-100 tracking-tight">Configuración del Sistema</h1>
           <p className="text-xs text-zinc-400 mt-0.5">
-            Parámetros operativos de la sucursal CelMart, hardware de impresión térmica y garantías.
+            Parámetros operativos de la sucursal CelMart, hardware de impresión térmica y mensajería WhatsApp.
           </p>
         </div>
 
@@ -282,29 +331,114 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ config, onSaveConfig
           </div>
         </div>
 
-        {/* WhatsApp Notification Template */}
+        {/* WhatsApp Notification Templates Manager */}
         <div className="bg-[#161619] border border-zinc-800/80 rounded-lg p-5 space-y-4 shadow-sm">
-          <div className="flex items-center gap-2.5 pb-3 border-b border-zinc-800">
-            <MessageSquare className="w-4 h-4 text-emerald-400" />
-            <h3 className="text-sm font-semibold text-zinc-100">
-              Plantilla de Notificación WhatsApp
-            </h3>
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-3 border-b border-zinc-800">
+            <div className="flex items-center gap-2.5">
+              <div className="w-6 h-6 rounded-md bg-emerald-950/60 border border-emerald-800/60 flex items-center justify-center text-emerald-400">
+                <MessageSquare className="w-3.5 h-3.5" />
+              </div>
+              <div>
+                <h3 className="text-sm font-semibold text-zinc-100">
+                  Plantillas de Comunicación Directa por WhatsApp
+                </h3>
+                <p className="text-[11px] text-zinc-400">
+                  Personaliza los mensajes que se enviarán a los clientes según el estado técnico de su equipo.
+                </p>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={handleRestoreTemplateDefaults}
+              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-[#1c1c20] hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200 border border-zinc-700/60 text-[11px] font-mono transition-colors self-start sm:self-auto"
+              title="Reestablecer todas las plantillas al texto por defecto"
+            >
+              <RotateCcw className="w-3 h-3" />
+              <span>Restaurar por defecto</span>
+            </button>
           </div>
 
-          <div className="text-xs space-y-2">
-            <label className="block text-zinc-400 font-mono text-[11px]">
-              PLANTILLA DE MENSAJE AUTOMÁTICO
-            </label>
+          {/* Template Selector Tabs */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+            {templateTabs.map((tab) => {
+              const isSelected = activeTemplateTab === tab.key;
+              return (
+                <button
+                  key={tab.key}
+                  type="button"
+                  onClick={() => setActiveTemplateTab(tab.key)}
+                  className={`p-2.5 rounded-lg border text-left transition-all flex flex-col justify-between ${
+                    isSelected
+                      ? 'bg-emerald-950/30 border-emerald-600/70 text-emerald-200 shadow-sm'
+                      : 'bg-[#1c1c20] border-zinc-800/80 hover:border-zinc-700 text-zinc-400 hover:text-zinc-200'
+                  }`}
+                >
+                  <div className="flex items-center gap-1.5 text-xs font-semibold">
+                    <span>{tab.icon}</span>
+                    <span className="truncate">{tab.title}</span>
+                  </div>
+                  <span className="text-[10px] text-zinc-500 truncate mt-1">
+                    {tab.subtitle}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Variables dinámicas chips */}
+          <div className="p-3 rounded-lg bg-[#111114] border border-zinc-800 space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] font-mono font-semibold text-zinc-300 flex items-center gap-1.5">
+                <Sparkles className="w-3.5 h-3.5 text-emerald-400" />
+                Variables Dinámicas Disponibles (haz clic para insertar en el texto):
+              </span>
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {[
+                { tag: 'cliente', desc: 'Nombre del cliente' },
+                { tag: 'dispositivo', desc: 'Marca y modelo del equipo' },
+                { tag: 'orden', desc: 'Folio / Orden (ej. OS-2402)' },
+                { tag: 'estado', desc: 'Estado actual de reparación' },
+                { tag: 'tecnico', desc: 'Técnico asignado' },
+              ].map(({ tag, desc }) => (
+                <button
+                  key={tag}
+                  type="button"
+                  onClick={() => handleInsertVariable(tag)}
+                  className="inline-flex items-center gap-1 px-2 py-1 rounded bg-[#1c1c20] hover:bg-emerald-950/40 hover:text-emerald-300 hover:border-emerald-700/60 border border-zinc-700/60 font-mono text-[11px] text-zinc-300 transition-all cursor-pointer"
+                  title={`Insertar {{${tag}}} (${desc})`}
+                >
+                  <span className="text-emerald-400 font-bold">{`{{${tag}}}`}</span>
+                  <span className="text-zinc-500 text-[10px]">· {desc}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Active Template Editor */}
+          <div className="space-y-1.5 text-xs">
+            <div className="flex items-center justify-between text-zinc-400 font-mono text-[11px]">
+              <span>EDITANDO: {templateTabs.find(t => t.key === activeTemplateTab)?.title.toUpperCase()}</span>
+              <span className="text-zinc-500">
+                {(formData.plantillasWhatsApp?.[activeTemplateTab] || '').length} caracteres
+              </span>
+            </div>
             <textarea
-              rows={3}
-              value={formData.mensajeWhatsAppPlantilla}
-              onChange={(e) => setFormData({ ...formData, mensajeWhatsAppPlantilla: e.target.value })}
-              className="w-full bg-[#1c1c20] text-zinc-100 px-3 py-2 rounded-lg border border-zinc-700/60 focus:border-zinc-500 focus:outline-none text-xs leading-relaxed font-mono"
-              placeholder="Hola {{cliente}}, te informamos que tu dispositivo {{dispositivo}} (Orden {{orden}}) se encuentra en estado: *{{estado}}*."
+              rows={6}
+              value={formData.plantillasWhatsApp?.[activeTemplateTab] || ''}
+              onChange={(e) =>
+                setFormData({
+                  ...formData,
+                  plantillasWhatsApp: {
+                    ...formData.plantillasWhatsApp,
+                    [activeTemplateTab]: e.target.value,
+                  },
+                })
+              }
+              className="w-full bg-[#1c1c20] text-zinc-100 px-3.5 py-2.5 rounded-lg border border-zinc-700/60 focus:border-emerald-500 focus:outline-none text-xs leading-relaxed font-sans shadow-inner"
+              placeholder="Escribe el mensaje de la plantilla..."
             />
-            <p className="text-[10px] text-zinc-500 font-mono">
-              Variables disponibles: {'{{cliente}}'}, {'{{dispositivo}}'}, {'{{orden}}'}, {'{{estado}}'}
-            </p>
           </div>
         </div>
 
@@ -377,7 +511,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ config, onSaveConfig
             {isSaved ? (
               <div className="flex items-center gap-2 text-emerald-400 bg-emerald-950/60 border border-emerald-800/60 px-3.5 py-2 rounded-lg font-mono">
                 <Check className="w-4 h-4 text-emerald-400 shrink-0" />
-                <span>¡Parámetros de CelMart guardados y sincronizados correctamente!</span>
+                <span>¡Parámetros y plantillas WhatsApp de CelMart guardados correctamente!</span>
               </div>
             ) : lastSavedTime ? (
               <span className="text-zinc-500 font-mono text-[11px]">
@@ -385,7 +519,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ config, onSaveConfig
               </span>
             ) : (
               <span className="text-zinc-500 text-[11px]">
-                Los cambios se aplicarán de inmediato a los comprobantes impresos y tickets.
+                Los cambios se aplicarán de inmediato a los comprobantes impresos y notificaciones de WhatsApp.
               </span>
             )}
           </div>

@@ -1,4 +1,5 @@
 import { Order, Technician, InventoryItem, InventoryMovement, Client, WorkshopConfig } from '../types';
+import { defaultWhatsAppTemplates } from '../lib/whatsapp';
 
 export const initialWorkshopConfig: WorkshopConfig = {
   nombreTaller: 'CelMart',
@@ -13,6 +14,7 @@ export const initialWorkshopConfig: WorkshopConfig = {
   diasGarantiaPlaca: 30,
   politicaGarantiaTexto: 'Garantía válida únicamente con este comprobante o IMEI. No cubre daños por humedad, golpes posteriores, sobrevoltaje ni manipulación de terceros.',
   mensajeWhatsAppPlantilla: 'Hola {{cliente}}, te informamos que tu dispositivo {{dispositivo}} (Orden {{orden}}) se encuentra en estado: *{{estado}}*. CelMart Servicio Técnico.',
+  plantillasWhatsApp: defaultWhatsAppTemplates,
   simboloMoneda: '$',
   tasaIva: 16,
 };
@@ -122,34 +124,7 @@ export const initialInventoryItems: InventoryItem[] = [
   },
 ];
 
-export const initialInventoryMovements: InventoryMovement[] = [
-  {
-    id: 'mov-1',
-    repuestoNombre: 'Pantalla OLED iPhone 13 Original',
-    codigoOrden: 'OS-2401',
-    tipo: 'consumo',
-    cantidad: -1,
-    autor: 'Andrea Flores',
-    tiempo: 'Hace 45 min',
-  },
-  {
-    id: 'mov-2',
-    repuestoNombre: 'Batería Samsung Galaxy S22 3700mAh',
-    codigoOrden: 'OS-2403',
-    tipo: 'consumo',
-    cantidad: -1,
-    autor: 'Carlos Mendoza',
-    tiempo: 'Hace 2 horas',
-  },
-  {
-    id: 'mov-3',
-    repuestoNombre: 'Módulo Flex de Carga Xiaomi Redmi Note 11',
-    tipo: 'reabastecimiento',
-    cantidad: 10,
-    autor: 'Administrador',
-    tiempo: 'Ayer',
-  },
-];
+export const initialInventoryMovements: InventoryMovement[] = [];
 
 export const initialClients: Client[] = [
   {

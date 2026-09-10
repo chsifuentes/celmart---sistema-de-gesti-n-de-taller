@@ -8,9 +8,12 @@ import {
   Search, 
   MessageSquare,
   ChevronDown,
-  Inbox
+  Inbox,
+  Trash2,
+  AlertTriangle
 } from 'lucide-react';
-import { Order, OrderStatus } from '../types';
+import { Order, OrderStatus, WhatsAppTemplateKey } from '../types';
+import { determineTemplateKeyForStatus } from '../lib/whatsapp';
 
 interface OrdersTableProps {
   orders: Order[];
@@ -18,8 +21,9 @@ interface OrdersTableProps {
   setSelectedFilter: (filter: string) => void;
   onSelectOrder: (order: Order) => void;
   onPrintTicket: (order: Order) => void;
-  onOpenWhatsApp: (order: Order) => void;
+  onOpenWhatsApp: (order: Order, templateKey?: WhatsAppTemplateKey) => void;
   onUpdateOrderStatus: (orderId: string, newStatus: OrderStatus) => void;
+  onDeleteOrder?: (orderId: string) => void | Promise<void>;
 }
 
 export const OrdersTable: React.FC<OrdersTableProps> = ({
@@ -30,9 +34,12 @@ export const OrdersTable: React.FC<OrdersTableProps> = ({
   onPrintTicket,
   onOpenWhatsApp,
   onUpdateOrderStatus,
+  onDeleteOrder,
 }) => {
   const [tableSearch, setTableSearch] = useState('');
   const [openStatusDropdownId, setOpenStatusDropdownId] = useState<string | null>(null);
+  const [orderToDelete, setOrderToDelete] = useState<Order | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
 
   const filterTabs = [
     'Todos',
@@ -185,29 +192,29 @@ export const OrdersTable: React.FC<OrdersTableProps> = ({
       </div>
 
       {/* Table Content */}
-      <div className="overflow-x-auto">
-        <table className="w-full text-left border-collapse">
+      <div className="overflow-x-auto w-full">
+        <table className="w-full text-left border-collapse min-w-[760px]">
           <thead>
             <tr className="border-b border-zinc-800/80 bg-[#111114]">
-              <th className="py-3 px-4 text-[10px] uppercase font-mono tracking-wider text-zinc-400 font-semibold w-24">
+              <th className="py-3 px-4 text-[10px] uppercase font-mono tracking-wider text-zinc-400 font-semibold w-24 whitespace-nowrap">
                 ID
               </th>
-              <th className="py-3 px-4 text-[10px] uppercase font-mono tracking-wider text-zinc-400 font-semibold">
+              <th className="py-3 px-4 text-[10px] uppercase font-mono tracking-wider text-zinc-400 font-semibold whitespace-nowrap">
                 CLIENTE
               </th>
-              <th className="py-3 px-4 text-[10px] uppercase font-mono tracking-wider text-zinc-400 font-semibold">
+              <th className="py-3 px-4 text-[10px] uppercase font-mono tracking-wider text-zinc-400 font-semibold whitespace-nowrap">
                 DISPOSITIVO
               </th>
-              <th className="py-3 px-4 text-[10px] uppercase font-mono tracking-wider text-zinc-400 font-semibold">
+              <th className="py-3 px-4 text-[10px] uppercase font-mono tracking-wider text-zinc-400 font-semibold whitespace-nowrap">
                 ESTADO
               </th>
-              <th className="py-3 px-4 text-[10px] uppercase font-mono tracking-wider text-zinc-400 font-semibold">
+              <th className="py-3 px-4 text-[10px] uppercase font-mono tracking-wider text-zinc-400 font-semibold whitespace-nowrap">
                 TÉCNICO
               </th>
-              <th className="py-3 px-4 text-[10px] uppercase font-mono tracking-wider text-zinc-400 font-semibold">
+              <th className="py-3 px-4 text-[10px] uppercase font-mono tracking-wider text-zinc-400 font-semibold whitespace-nowrap">
                 INGRESO
               </th>
-              <th className="py-3 px-4 text-[10px] uppercase font-mono tracking-wider text-zinc-400 font-semibold text-right">
+              <th className="py-3 px-4 text-[10px] uppercase font-mono tracking-wider text-zinc-400 font-semibold text-right whitespace-nowrap">
                 ACCIONES
               </th>
             </tr>
@@ -298,6 +305,8 @@ export const OrdersTable: React.FC<OrdersTableProps> = ({
                               onClick={() => {
                                 onUpdateOrderStatus(order.id, st);
                                 setOpenStatusDropdownId(null);
+                                // Disparar modal de confirmación WhatsApp con la plantilla correspondiente al nuevo estado
+                                onOpenWhatsApp({ ...order, estado: st }, determineTemplateKeyForStatus(st));
                               }}
                               className={`w-full text-left px-2.5 py-1.5 text-xs hover:bg-zinc-800/80 flex items-center justify-between ${
                                 order.estado === st ? 'text-zinc-100 font-semibold bg-zinc-800/60' : 'text-zinc-400 hover:text-zinc-200'
@@ -343,9 +352,9 @@ export const OrdersTable: React.FC<OrdersTableProps> = ({
                     <div className="flex items-center justify-end gap-1.5">
                       {/* WhatsApp quick contact */}
                       <button
-                        onClick={() => onOpenWhatsApp(order)}
-                        className="p-1.5 rounded-lg text-zinc-400 hover:text-emerald-400 hover:bg-zinc-800/60 transition-colors"
-                        title="Enviar actualización WhatsApp"
+                        onClick={() => onOpenWhatsApp(order, determineTemplateKeyForStatus(order.estado))}
+                        className="p-1.5 rounded-lg text-emerald-400 hover:text-emerald-300 bg-emerald-950/30 hover:bg-emerald-900/50 border border-emerald-800/50 transition-colors shadow-xs"
+                        title="Enviar notificación por WhatsApp al cliente"
                       >
                         <MessageSquare className="w-4 h-4" />
                       </button>
@@ -367,6 +376,15 @@ export const OrdersTable: React.FC<OrdersTableProps> = ({
                       >
                         <Printer className="w-4 h-4" />
                       </button>
+
+                      {/* Delete order */}
+                      <button
+                        onClick={() => setOrderToDelete(order)}
+                        className="p-1.5 rounded-lg text-zinc-400 hover:text-rose-400 hover:bg-rose-950/30 border border-transparent hover:border-rose-900/40 transition-colors"
+                        title="Eliminar Orden de Servicio"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
                     </div>
                   </td>
                 </tr>
@@ -375,6 +393,89 @@ export const OrdersTable: React.FC<OrdersTableProps> = ({
           </tbody>
         </table>
       </div>
+
+      {/* Modal de Confirmación para Eliminar Ticket */}
+      {orderToDelete && (
+        <div 
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-xs p-4 animate-in fade-in duration-150"
+          onClick={() => {
+            if (!isDeleting) setOrderToDelete(null);
+          }}
+        >
+          <div 
+            className="bg-[#161619] border border-zinc-700/80 rounded-xl max-w-md w-full p-6 shadow-2xl space-y-4 animate-in zoom-in-95 duration-150"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start gap-3.5">
+              <div className="w-10 h-10 rounded-full bg-rose-950/60 border border-rose-800/60 flex items-center justify-center text-rose-400 shrink-0">
+                <AlertTriangle className="w-5 h-5" />
+              </div>
+              <div className="space-y-1.5 min-w-0 flex-1">
+                <h3 className="text-base font-bold text-zinc-100">
+                  ¿Eliminar orden {orderToDelete.id}?
+                </h3>
+                <p className="text-xs text-zinc-300 leading-relaxed">
+                  Estás a punto de eliminar definitivamente la orden de reparación de{' '}
+                  <strong className="text-white font-semibold">{orderToDelete.cliente.nombre}</strong>.
+                </p>
+                <div className="bg-[#1c1c20] border border-zinc-800/90 rounded-lg p-3 text-xs text-zinc-400 font-mono space-y-1 mt-2">
+                  <div className="flex justify-between">
+                    <span className="text-zinc-500">Folio:</span>
+                    <span className="text-zinc-200 font-semibold">{orderToDelete.id}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-zinc-500">Dispositivo:</span>
+                    <span className="text-zinc-200">{orderToDelete.dispositivo.marca} {orderToDelete.dispositivo.modelo}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-zinc-500">IMEI:</span>
+                    <span className="text-zinc-300">{orderToDelete.dispositivo.imei || 'N/A'}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-zinc-500">Estado actual:</span>
+                    <span className="text-amber-400 font-medium">{orderToDelete.estado}</span>
+                  </div>
+                </div>
+                <p className="text-[11px] text-rose-400 font-mono pt-1">
+                  Esta acción es irreversible y eliminará el registro de la base de datos.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2.5 pt-3 border-t border-zinc-800">
+              <button
+                type="button"
+                disabled={isDeleting}
+                onClick={() => setOrderToDelete(null)}
+                className="px-4 py-2 rounded-lg text-xs font-semibold text-zinc-300 hover:text-white bg-zinc-800/80 hover:bg-zinc-700/80 transition-colors disabled:opacity-50"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                disabled={isDeleting}
+                onClick={async () => {
+                  try {
+                    setIsDeleting(true);
+                    if (onDeleteOrder) {
+                      await onDeleteOrder(orderToDelete.id);
+                    }
+                    setOrderToDelete(null);
+                  } catch (err) {
+                    console.error('Error eliminando orden:', err);
+                  } finally {
+                    setIsDeleting(false);
+                  }
+                }}
+                className="px-4 py-2 rounded-lg text-xs font-semibold text-white bg-rose-600 hover:bg-rose-500 transition-colors flex items-center gap-1.5 shadow-sm disabled:opacity-50"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>{isDeleting ? 'Eliminando...' : 'Eliminar Definitivamente'}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

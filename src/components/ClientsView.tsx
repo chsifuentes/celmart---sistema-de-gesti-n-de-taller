@@ -1,12 +1,14 @@
 import React, { useState } from 'react';
-import { Search, Plus, UserPlus, Phone, Mail, Wrench, DollarSign, X, Check, ArrowRight, Inbox } from 'lucide-react';
-import { Client, Order } from '../types';
+import { Search, Plus, UserPlus, Phone, Mail, Wrench, DollarSign, X, Check, ArrowRight, Inbox, MessageSquare } from 'lucide-react';
+import { Client, Order, WhatsAppTemplateKey } from '../types';
+import { formatWhatsAppPhone } from '../lib/whatsapp';
 
 interface ClientsViewProps {
   clients: Client[];
   orders: Order[];
   onAddClient: (newClient: Omit<Client, 'id' | 'reparacionesRealizadas' | 'saldoPendiente' | 'ultimaVisita'>) => void;
   onSelectClientOrders: (clientName: string) => void;
+  onOpenWhatsApp?: (order: Order, templateKey?: WhatsAppTemplateKey) => void;
 }
 
 export const ClientsView: React.FC<ClientsViewProps> = ({
@@ -14,6 +16,7 @@ export const ClientsView: React.FC<ClientsViewProps> = ({
   orders,
   onAddClient,
   onSelectClientOrders,
+  onOpenWhatsApp,
 }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
@@ -87,26 +90,26 @@ export const ClientsView: React.FC<ClientsViewProps> = ({
 
       {/* Clients Table */}
       <div className="bg-[#161619] border border-zinc-800/80 rounded-lg overflow-hidden shadow-sm">
-        <div className="overflow-x-auto">
-          <table className="w-full text-left border-collapse">
+        <div className="overflow-x-auto w-full">
+          <table className="w-full text-left border-collapse min-w-[700px]">
             <thead>
               <tr className="border-b border-zinc-800/80 bg-[#111114]">
-                <th className="py-3 px-4 text-[10px] uppercase font-mono tracking-wider text-zinc-400 font-semibold">
+                <th className="py-3 px-4 text-[10px] uppercase font-mono tracking-wider text-zinc-400 font-semibold whitespace-nowrap">
                   CLIENTE
                 </th>
-                <th className="py-3 px-4 text-[10px] uppercase font-mono tracking-wider text-zinc-400 font-semibold">
+                <th className="py-3 px-4 text-[10px] uppercase font-mono tracking-wider text-zinc-400 font-semibold whitespace-nowrap">
                   CONTACTO
                 </th>
-                <th className="py-3 px-4 text-[10px] uppercase font-mono tracking-wider text-zinc-400 font-semibold text-center">
+                <th className="py-3 px-4 text-[10px] uppercase font-mono tracking-wider text-zinc-400 font-semibold text-center whitespace-nowrap">
                   REPARACIONES
                 </th>
-                <th className="py-3 px-4 text-[10px] uppercase font-mono tracking-wider text-zinc-400 font-semibold">
+                <th className="py-3 px-4 text-[10px] uppercase font-mono tracking-wider text-zinc-400 font-semibold whitespace-nowrap">
                   SALDO PENDIENTE
                 </th>
-                <th className="py-3 px-4 text-[10px] uppercase font-mono tracking-wider text-zinc-400 font-semibold">
+                <th className="py-3 px-4 text-[10px] uppercase font-mono tracking-wider text-zinc-400 font-semibold whitespace-nowrap">
                   ÚLTIMA VISITA
                 </th>
-                <th className="py-3 px-4 text-[10px] uppercase font-mono tracking-wider text-zinc-400 font-semibold text-right">
+                <th className="py-3 px-4 text-[10px] uppercase font-mono tracking-wider text-zinc-400 font-semibold text-right whitespace-nowrap">
                   HISTORIAL
                 </th>
               </tr>
@@ -189,13 +192,33 @@ export const ClientsView: React.FC<ClientsViewProps> = ({
 
                       {/* Historial */}
                       <td className="py-3 px-4 text-right">
-                        <button
-                          onClick={() => onSelectClientOrders(client.nombre)}
-                          className="inline-flex items-center gap-1 text-xs text-zinc-300 hover:text-white bg-[#1c1c20] hover:bg-zinc-800 border border-zinc-700/60 px-2.5 py-1 rounded-lg transition-colors"
-                        >
-                          <span>Ver Órdenes</span>
-                          <ArrowRight className="w-3 h-3" />
-                        </button>
+                        <div className="flex items-center justify-end gap-1.5">
+                          {client.telefono && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (clientOrders.length > 0 && onOpenWhatsApp) {
+                                  onOpenWhatsApp(clientOrders[0]);
+                                } else {
+                                  const clean = formatWhatsAppPhone(client.telefono);
+                                  const msg = encodeURIComponent(`Hola ${client.nombre}, te saludamos de CelMart Servicio Técnico.`);
+                                  window.open(`https://wa.me/${clean}?text=${msg}`, '_blank');
+                                }
+                              }}
+                              className="p-1.5 rounded-lg text-emerald-400 hover:text-emerald-300 bg-emerald-950/30 hover:bg-emerald-900/50 border border-emerald-800/50 transition-colors"
+                              title="Contactar por WhatsApp"
+                            >
+                              <MessageSquare className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+                          <button
+                            onClick={() => onSelectClientOrders(client.nombre)}
+                            className="inline-flex items-center gap-1 text-xs text-zinc-300 hover:text-white bg-[#1c1c20] hover:bg-zinc-800 border border-zinc-700/60 px-2.5 py-1 rounded-lg transition-colors"
+                          >
+                            <span>Ver Órdenes</span>
+                            <ArrowRight className="w-3 h-3" />
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   );

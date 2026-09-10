@@ -19,7 +19,8 @@ import {
   FileText,
   DollarSign
 } from 'lucide-react';
-import { Order, OrderStatus, TechNote, InventoryItem, AssignedPart } from '../types';
+import { Order, OrderStatus, TechNote, InventoryItem, AssignedPart, WhatsAppTemplateKey } from '../types';
+import { determineTemplateKeyForStatus } from '../lib/whatsapp';
 
 interface DeviceDetailDrawerProps {
   order: Order | null;
@@ -29,7 +30,7 @@ interface DeviceDetailDrawerProps {
   onAddNote: (orderId: string, noteContent: string, noteType: TechNote['tipo']) => void;
   onAssignPart: (orderId: string, part: AssignedPart) => void;
   onPrintTicket: (order: Order) => void;
-  onOpenWhatsApp: (order: Order) => void;
+  onOpenWhatsApp: (order: Order, templateKey?: WhatsAppTemplateKey) => void;
   inventory: InventoryItem[];
 }
 
@@ -119,9 +120,9 @@ export const DeviceDetailDrawer: React.FC<DeviceDetailDrawerProps> = ({
 
           <div className="flex items-center gap-2">
             <button
-              onClick={() => onOpenWhatsApp(order)}
+              onClick={() => onOpenWhatsApp(order, determineTemplateKeyForStatus(order.estado))}
               className="px-2.5 py-1.5 rounded-lg bg-emerald-950/40 hover:bg-emerald-900/50 text-emerald-400 border border-emerald-800/50 text-xs font-medium flex items-center gap-1.5 transition-colors"
-              title="Enviar WhatsApp"
+              title="Enviar WhatsApp al cliente"
             >
               <MessageSquare className="w-3.5 h-3.5" />
               <span className="hidden sm:inline">WhatsApp</span>
@@ -150,7 +151,11 @@ export const DeviceDetailDrawer: React.FC<DeviceDetailDrawerProps> = ({
             <span className="text-zinc-400 font-mono text-[11px]">ESTADO ACTUAL:</span>
             <select
               value={order.estado}
-              onChange={(e) => onUpdateStatus(order.id, e.target.value as OrderStatus)}
+              onChange={(e) => {
+                const newStatus = e.target.value as OrderStatus;
+                onUpdateStatus(order.id, newStatus);
+                onOpenWhatsApp({ ...order, estado: newStatus }, determineTemplateKeyForStatus(newStatus));
+              }}
               className="bg-[#1c1c20] text-zinc-100 font-semibold px-3 py-1 rounded-lg border border-zinc-700/60 text-xs focus:outline-none focus:border-zinc-500 cursor-pointer"
             >
               {statusOptions.map((st) => (

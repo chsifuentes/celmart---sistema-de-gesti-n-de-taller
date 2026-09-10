@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Search, Plus, Bell, Command, CheckCircle2, AlertTriangle, ShieldCheck, X, LogOut, Lock } from 'lucide-react';
+import { Search, Plus, Bell, Command, CheckCircle2, AlertTriangle, ShieldCheck, X, LogOut, Lock, Menu } from 'lucide-react';
 
 interface HeaderProps {
   globalSearch: string;
@@ -8,6 +8,7 @@ interface HeaderProps {
   notificationsCount?: number;
   urgentOrdersCount: number;
   onLogout?: () => void;
+  onToggleMobileMenu?: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -16,6 +17,7 @@ export const Header: React.FC<HeaderProps> = ({
   onOpenNewOrder,
   urgentOrdersCount,
   onLogout,
+  onToggleMobileMenu,
 }) => {
   const [showNotifications, setShowNotifications] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
@@ -33,10 +35,119 @@ export const Header: React.FC<HeaderProps> = ({
   }, []);
 
   return (
-    <header className="h-16 border-b border-zinc-800/80 bg-[#161619] px-6 flex items-center justify-between gap-4 sticky top-0 z-20">
-      {/* Global Search Bar */}
-      <div className="flex-1 max-w-xl">
-        <div className="relative group">
+    <header className="border-b border-zinc-800/80 bg-[#161619] px-4 md:px-6 py-2.5 md:py-0 md:h-16 flex flex-col md:flex-row md:items-center justify-between gap-2.5 md:gap-4 sticky top-0 z-20">
+      {/* Mobile Top Bar (Row 1 on mobile, Right side on desktop) */}
+      <div className="flex items-center justify-between gap-2 w-full md:w-auto md:order-2">
+        {/* Left Mobile: Hamburger + Brand (Hidden on desktop) */}
+        <div className="flex items-center gap-2 md:hidden">
+          <button
+            id="btn-mobile-menu"
+            onClick={onToggleMobileMenu}
+            className="p-1.5 rounded-lg text-zinc-300 hover:text-white hover:bg-zinc-800/60 border border-zinc-700/60 md:hidden shrink-0"
+            title="Abrir menú"
+          >
+            <Menu className="w-5 h-5" />
+          </button>
+          <div className="flex items-center gap-1.5">
+            <div className="w-7 h-7 rounded-lg bg-[#1c1c20] border border-zinc-700/60 flex items-center justify-center font-bold text-[11px] font-mono text-zinc-100 shadow-sm">
+              CM
+            </div>
+            <span className="font-semibold text-zinc-100 tracking-tight text-xs uppercase font-sans">
+              CELMART
+            </span>
+          </div>
+        </div>
+
+        {/* Right Actions: Notifications, + Nueva Orden, Avatar & Lock */}
+        <div className="flex items-center gap-2 sm:gap-3 ml-auto">
+          {/* Notifications Popover Toggle */}
+          <div className="relative">
+            <button
+              id="btn-notifications"
+              onClick={() => setShowNotifications(!showNotifications)}
+              className="p-2 rounded-lg text-zinc-300 hover:text-zinc-100 hover:bg-zinc-800/60 border border-zinc-700/60 transition-colors relative bg-[#1c1c20]"
+              title="Notificaciones y Alertas"
+            >
+              <Bell className="w-4 h-4" />
+              {urgentOrdersCount > 0 && (
+                <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-rose-500 animate-ping"></span>
+              )}
+              {urgentOrdersCount > 0 && (
+                <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-rose-500"></span>
+              )}
+            </button>
+
+            {showNotifications && (
+              <div className="absolute right-0 mt-2 w-72 sm:w-80 rounded-lg bg-[#161619] border border-zinc-800/80 shadow-2xl p-3 z-50 animate-in fade-in slide-in-from-top-2 duration-150">
+                <div className="flex items-center justify-between pb-2 border-b border-zinc-800/80 mb-2">
+                  <span className="text-xs font-semibold text-zinc-100">Alertas del Taller</span>
+                  <span className="text-[10px] font-mono text-zinc-400 uppercase">En tiempo real</span>
+                </div>
+                <div className="space-y-2 max-h-64 overflow-y-auto">
+                  <div className="p-2.5 rounded-lg bg-[#1c1c20] border border-zinc-800/80 text-xs flex gap-2.5 items-start">
+                    <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                    <div>
+                      <p className="text-zinc-100 font-medium text-[11px]">3 Órdenes Urgentes Activas</p>
+                      <p className="text-zinc-400 text-[10px] mt-0.5">OS-2418, OS-2413 y OS-2410 requieren atención prioritaria.</p>
+                    </div>
+                  </div>
+                  <div className="p-2.5 rounded-lg bg-[#1c1c20] border border-zinc-800/80 text-xs flex gap-2.5 items-start">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+                    <div>
+                      <p className="text-zinc-100 font-medium text-[11px]">Repuestos Recibidos</p>
+                      <p className="text-zinc-400 text-[10px] mt-0.5">Lote de 25 puertos Type-C ingresados a stock.</p>
+                    </div>
+                  </div>
+                  <div className="p-2.5 rounded-lg bg-[#1c1c20] border border-zinc-800/80 text-xs flex gap-2.5 items-start">
+                    <ShieldCheck className="w-4 h-4 text-sky-400 shrink-0 mt-0.5" />
+                    <div>
+                      <p className="text-zinc-100 font-medium text-[11px]">Garantías en Vigor</p>
+                      <p className="text-zinc-400 text-[10px] mt-0.5">128 dispositivos con garantía vigente.</p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Primary Action: + Nueva Orden de Servicio */}
+          <button
+            id="btn-new-service-order"
+            onClick={onOpenNewOrder}
+            className="flex items-center gap-1.5 sm:gap-2 bg-zinc-100 hover:bg-white text-zinc-950 px-2.5 sm:px-3.5 py-1.5 sm:py-2 rounded-lg font-semibold text-xs shadow-sm transition-all hover:scale-[1.01] active:scale-[0.99] shrink-0"
+          >
+            <Plus className="w-4 h-4" />
+            <span className="hidden sm:inline">Nueva Orden de Servicio</span>
+            <span className="sm:hidden">Nueva Orden</span>
+          </button>
+
+          {/* User Info Avatar Badge & Lock Action */}
+          <div className="flex items-center gap-2 pl-2 border-l border-zinc-800/80">
+            <div className="w-8 h-8 rounded-full bg-[#1c1c20] border border-zinc-700/60 flex items-center justify-center text-xs font-mono font-semibold text-zinc-200">
+              CM
+            </div>
+            <div className="hidden lg:flex flex-col text-left">
+              <span className="text-xs font-semibold text-zinc-100 leading-tight">CelMart Taller</span>
+              <span className="text-[10px] text-zinc-400 font-mono">Sesión activa</span>
+            </div>
+
+            {onLogout && (
+              <button
+                id="btn-lock-session"
+                onClick={onLogout}
+                className="p-1.5 ml-0.5 rounded-lg text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800/60 border border-transparent hover:border-zinc-700/60 transition-colors"
+                title="Bloquear terminal / Cerrar sesión"
+              >
+                <Lock className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Search Bar (Row 2 on mobile, Left side on desktop) */}
+      <div className="w-full md:flex-1 md:max-w-xl md:order-1">
+        <div className="relative group w-full">
           <Search className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-zinc-400 group-focus-within:text-zinc-200 transition-colors" />
           <input
             ref={searchInputRef}
@@ -62,91 +173,6 @@ export const Header: React.FC<HeaderProps> = ({
               </kbd>
             )}
           </div>
-        </div>
-      </div>
-
-      {/* Right Actions */}
-      <div className="flex items-center gap-3">
-        {/* Notifications Popover Toggle */}
-        <div className="relative">
-          <button
-            id="btn-notifications"
-            onClick={() => setShowNotifications(!showNotifications)}
-            className="p-2 rounded-lg text-zinc-300 hover:text-zinc-100 hover:bg-zinc-800/60 border border-zinc-700/60 transition-colors relative bg-[#1c1c20]"
-            title="Notificaciones y Alertas"
-          >
-            <Bell className="w-4 h-4" />
-            {urgentOrdersCount > 0 && (
-              <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-rose-500 animate-ping"></span>
-            )}
-            {urgentOrdersCount > 0 && (
-              <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-rose-500"></span>
-            )}
-          </button>
-
-          {showNotifications && (
-            <div className="absolute right-0 mt-2 w-80 rounded-lg bg-[#161619] border border-zinc-800/80 shadow-2xl p-3 z-50 animate-in fade-in slide-in-from-top-2 duration-150">
-              <div className="flex items-center justify-between pb-2 border-b border-zinc-800/80 mb-2">
-                <span className="text-xs font-semibold text-zinc-100">Alertas del Taller</span>
-                <span className="text-[10px] font-mono text-zinc-400 uppercase">En tiempo real</span>
-              </div>
-              <div className="space-y-2 max-h-64 overflow-y-auto">
-                <div className="p-2.5 rounded-lg bg-[#1c1c20] border border-zinc-800/80 text-xs flex gap-2.5 items-start">
-                  <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
-                  <div>
-                    <p className="text-zinc-100 font-medium text-[11px]">3 Órdenes Urgentes Activas</p>
-                    <p className="text-zinc-400 text-[10px] mt-0.5">OS-2418, OS-2413 y OS-2410 requieren atención prioritaria.</p>
-                  </div>
-                </div>
-                <div className="p-2.5 rounded-lg bg-[#1c1c20] border border-zinc-800/80 text-xs flex gap-2.5 items-start">
-                  <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
-                  <div>
-                    <p className="text-zinc-100 font-medium text-[11px]">Repuestos Recibidos</p>
-                    <p className="text-zinc-400 text-[10px] mt-0.5">Lote de 25 puertos Type-C ingresados a stock.</p>
-                  </div>
-                </div>
-                <div className="p-2.5 rounded-lg bg-[#1c1c20] border border-zinc-800/80 text-xs flex gap-2.5 items-start">
-                  <ShieldCheck className="w-4 h-4 text-sky-400 shrink-0 mt-0.5" />
-                  <div>
-                    <p className="text-zinc-100 font-medium text-[11px]">Garantías en Vigor</p>
-                    <p className="text-zinc-400 text-[10px] mt-0.5">128 dispositivos con garantía vigente.</p>
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
-
-        {/* Primary Action: + Nueva Orden de Servicio */}
-        <button
-          id="btn-new-service-order"
-          onClick={onOpenNewOrder}
-          className="flex items-center gap-2 bg-zinc-100 hover:bg-white text-zinc-950 px-3.5 py-2 rounded-lg font-semibold text-xs shadow-sm transition-all hover:scale-[1.01] active:scale-[0.99]"
-        >
-          <Plus className="w-4 h-4" />
-          <span>Nueva Orden de Servicio</span>
-        </button>
-
-        {/* User Info Avatar Badge & Lock Action */}
-        <div className="flex items-center gap-2.5 pl-2 border-l border-zinc-800/80">
-          <div className="w-8 h-8 rounded-full bg-[#1c1c20] border border-zinc-700/60 flex items-center justify-center text-xs font-mono font-semibold text-zinc-200">
-            CM
-          </div>
-          <div className="hidden lg:flex flex-col text-left">
-            <span className="text-xs font-semibold text-zinc-100 leading-tight">CelMart Taller</span>
-            <span className="text-[10px] text-zinc-400 font-mono">Sesión activa</span>
-          </div>
-
-          {onLogout && (
-            <button
-              id="btn-lock-session"
-              onClick={onLogout}
-              className="p-1.5 ml-1 rounded-lg text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800/60 border border-transparent hover:border-zinc-700/60 transition-colors"
-              title="Bloquear terminal / Cerrar sesión"
-            >
-              <Lock className="w-3.5 h-3.5" />
-            </button>
-          )}
         </div>
       </div>
     </header>

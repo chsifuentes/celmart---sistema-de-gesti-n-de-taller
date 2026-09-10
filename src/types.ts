@@ -121,6 +121,15 @@ export interface Client {
   dispositivosFrecuentes: string[];
 }
 
+export interface WhatsAppTemplates {
+  ingreso: string;
+  cambioEstatus: string;
+  listoEntrega: string;
+  cotizacionPendiente: string;
+}
+
+export type WhatsAppTemplateKey = keyof WhatsAppTemplates;
+
 export interface WorkshopConfig {
   nombreTaller: string;
   direccion: string;
@@ -133,7 +142,9 @@ export interface WorkshopConfig {
   diasGarantiaBateria: number;
   diasGarantiaPlaca: number;
   politicaGarantiaTexto: string;
-  mensajeWhatsAppPlantilla: string;
+  mensajeWhatsAppPlantilla?: string;
+  plantillasWhatsApp: WhatsAppTemplates;
   simboloMoneda: string;
   tasaIva: number;
 }
+

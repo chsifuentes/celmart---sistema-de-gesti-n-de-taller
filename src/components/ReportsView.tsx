@@ -69,9 +69,6 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
         <h1 className="text-xl font-bold text-zinc-100 tracking-tight">
           Análisis de Fallas, Servicios y Modelos Frecuentes
         </h1>
-        <p className="text-xs text-zinc-400 mt-0.5">
-          Reportes de incidencia por tipo de avería, demanda de servicios técnicos, modelos más atendidos y consumo de almacén en CelMart.
-        </p>
       </div>
 
       {/* 1. Tarjetas de Métricas Superiores */}
@@ -177,9 +174,6 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
                 <Wrench className="w-4 h-4 text-zinc-400" />
                 <span>Fallas y Servicios Más Frecuentes</span>
               </h3>
-              <p className="text-[11px] text-zinc-400 mt-0.5">
-                Desglose por tipo de avería, volumen de servicios atendidos, modelo con mayor incidencia y ticket promedio generado.
-              </p>
             </div>
             <span className="text-[10px] font-mono text-zinc-400 uppercase bg-[#1c1c20] px-2.5 py-1 rounded border border-zinc-700/60 shrink-0 self-start sm:self-auto">
               Mes en curso
@@ -194,14 +188,14 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
               </p>
             </div>
           ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-xs border-collapse">
+            <div className="overflow-x-auto w-full">
+              <table className="w-full text-left text-xs border-collapse min-w-[540px]">
                 <thead>
                   <tr className="border-b border-zinc-800/80 bg-[#111114] text-[10px] font-mono uppercase text-zinc-400 font-semibold tracking-wider">
-                    <th className="py-2.5 px-3">SERVICIO / TIPO DE FALLA</th>
-                    <th className="py-2.5 px-3">DISPOSITIVO</th>
-                    <th className="py-2.5 px-3 text-center">ESTADO</th>
-                    <th className="py-2.5 px-3 text-right">TOTAL ESTIMADO</th>
+                    <th className="py-2.5 px-3 whitespace-nowrap">SERVICIO / TIPO DE FALLA</th>
+                    <th className="py-2.5 px-3 whitespace-nowrap">DISPOSITIVO</th>
+                    <th className="py-2.5 px-3 text-center whitespace-nowrap">ESTADO</th>
+                    <th className="py-2.5 px-3 text-right whitespace-nowrap">TOTAL ESTIMADO</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-zinc-800/60">
@@ -284,9 +278,6 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
                 Almacén
               </span>
             </div>
-            <p className="text-[11px] text-zinc-400">
-              Cruce de averías atendidas con consumo de piezas en stock.
-            </p>
 
             {inventory.length === 0 ? (
               <div className="py-8 text-center flex flex-col items-center justify-center space-y-1 text-zinc-500">

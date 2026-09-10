@@ -28,7 +28,7 @@ export const InventoryMovementsPanel: React.FC<InventoryMovementsPanelProps> = (
       {movements.length === 0 ? (
         <div className="py-8 text-center flex flex-col items-center justify-center space-y-1.5 border border-dashed border-zinc-800/80 rounded-lg">
           <Inbox className="w-5 h-5 text-zinc-600 stroke-[1.5]" />
-          <p className="text-xs font-mono text-zinc-500">Sin actividad reciente</p>
+          <p className="text-xs font-mono text-zinc-400">Sin movimientos recientes</p>
         </div>
       ) : (
         <div className="space-y-2.5">

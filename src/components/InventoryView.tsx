@@ -11,8 +11,7 @@ import {
   Pencil, 
   Trash2, 
   Barcode, 
-  ScanLine,
-  Check,
+  Check, 
   Inbox
 } from 'lucide-react';
 import { InventoryItem } from '../types';
@@ -164,9 +163,6 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
               </span>
             )}
           </div>
-          <p className="text-xs text-zinc-400 mt-0.5">
-            Refacciones, pantallas OLED, baterías OEM, integrados y consumibles de taller CelMart.
-          </p>
         </div>
 
         <button
@@ -220,42 +216,34 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
               <Barcode className="w-4 h-4 text-zinc-400" />
             </div>
           </div>
-
-          <div 
-            className="hidden sm:flex items-center gap-1 px-2 py-1.5 bg-[#1c1c20] border border-zinc-700/60 rounded-lg text-[10px] font-mono text-zinc-400 whitespace-nowrap"
-            title="El campo de búsqueda detecta pulsos de pistola lectora de código de barras USB"
-          >
-            <ScanLine className="w-3.5 h-3.5 text-emerald-400" />
-            <span>Escáner USB Activo</span>
-          </div>
         </div>
       </div>
 
       {/* Inventory Table */}
       <div className="bg-[#161619] border border-zinc-800/80 rounded-lg overflow-hidden shadow-sm">
-        <div className="overflow-x-auto">
-          <table className="w-full text-left border-collapse">
+        <div className="overflow-x-auto w-full">
+          <table className="w-full text-left border-collapse min-w-[780px]">
             <thead>
               <tr className="border-b border-zinc-800/80 bg-[#111114]">
-                <th className="py-2.5 px-4 text-[10px] uppercase font-mono tracking-wider text-zinc-400 font-semibold">
+                <th className="py-2.5 px-4 text-[10px] uppercase font-mono tracking-wider text-zinc-400 font-semibold whitespace-nowrap">
                   REPUESTO / SKU / CÓDIGO DE BARRAS
                 </th>
-                <th className="py-2.5 px-4 text-[10px] uppercase font-mono tracking-wider text-zinc-400 font-semibold">
+                <th className="py-2.5 px-4 text-[10px] uppercase font-mono tracking-wider text-zinc-400 font-semibold whitespace-nowrap">
                   CATEGORÍA
                 </th>
-                <th className="py-2.5 px-4 text-[10px] uppercase font-mono tracking-wider text-zinc-400 font-semibold">
+                <th className="py-2.5 px-4 text-[10px] uppercase font-mono tracking-wider text-zinc-400 font-semibold whitespace-nowrap">
                   COMPATIBILIDAD / UBICACIÓN
                 </th>
-                <th className="py-2.5 px-4 text-[10px] uppercase font-mono tracking-wider text-zinc-400 font-semibold">
+                <th className="py-2.5 px-4 text-[10px] uppercase font-mono tracking-wider text-zinc-400 font-semibold whitespace-nowrap">
                   PRECIO (COSTO / VENTA)
                 </th>
-                <th className="py-2.5 px-4 text-[10px] uppercase font-mono tracking-wider text-zinc-400 font-semibold text-center">
+                <th className="py-2.5 px-4 text-[10px] uppercase font-mono tracking-wider text-zinc-400 font-semibold text-center whitespace-nowrap">
                   ESTADO STOCK
                 </th>
-                <th className="py-2.5 px-4 text-[10px] uppercase font-mono tracking-wider text-zinc-400 font-semibold text-center">
+                <th className="py-2.5 px-4 text-[10px] uppercase font-mono tracking-wider text-zinc-400 font-semibold text-center whitespace-nowrap">
                   AJUSTE RÁPIDO
                 </th>
-                <th className="py-2.5 px-4 text-[10px] uppercase font-mono tracking-wider text-zinc-400 font-semibold text-right">
+                <th className="py-2.5 px-4 text-[10px] uppercase font-mono tracking-wider text-zinc-400 font-semibold text-right whitespace-nowrap">
                   ACCIONES
                 </th>
               </tr>
