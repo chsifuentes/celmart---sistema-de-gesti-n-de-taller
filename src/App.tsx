@@ -1,5 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { initialWorkshopConfig } from './data/initialData';
+import {
+  initialWorkshopConfig,
+  initialTechnicians,
+  initialInventoryMovements,
+} from './data/initialData';
 import {
   Order,
   OrderStatus,
@@ -40,11 +44,21 @@ export default function App() {
 
   // Database Data States
   const [orders, setOrders] = useState<Order[]>([]);
-  const [technicians, setTechnicians] = useState<Technician[]>([]);
+  const [technicians, setTechnicians] = useState<Technician[]>(initialTechnicians);
   const [inventory, setInventory] = useState<InventoryItem[]>([]);
-  const [movements, setMovements] = useState<InventoryMovement[]>([]);
+  const [movements, setMovements] = useState<InventoryMovement[]>(initialInventoryMovements);
   const [clients, setClients] = useState<Client[]>([]);
-  const [config, setConfig] = useState<WorkshopConfig>(initialWorkshopConfig);
+  const [config, setConfig] = useState<WorkshopConfig>(() => {
+    try {
+      const saved = localStorage.getItem('celmart_workshop_config');
+      if (saved) {
+        return { ...initialWorkshopConfig, ...JSON.parse(saved) };
+      }
+    } catch (e) {
+      console.warn('Error cargando configuración guardada:', e);
+    }
+    return initialWorkshopConfig;
+  });
   const [loading, setLoading] = useState(true);
 
   // Modals & Drawers State
@@ -288,6 +302,15 @@ export default function App() {
     if (!error) fetchData();
   };
 
+  const handleSaveConfig = async (updated: WorkshopConfig) => {
+    setConfig(updated);
+    try {
+      localStorage.setItem('celmart_workshop_config', JSON.stringify(updated));
+    } catch (err) {
+      console.warn('Error guardando configuración en localStorage:', err);
+    }
+  };
+
   if (!isAuthenticated) {
     return <LoginView onLogin={() => setIsAuthenticated(true)} />;
   }
@@ -364,7 +387,7 @@ export default function App() {
           )}
           {activeTab === 'configuraciones' && (
             <div className="animate-in fade-in duration-150">
-              <SettingsView config={config} onSaveConfig={(updated) => setConfig(updated)} />
+              <SettingsView config={config} onSaveConfig={handleSaveConfig} />
             </div>
           )}
         </main>
