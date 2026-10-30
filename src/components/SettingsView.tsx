@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
   Building2, 
   Printer, 
@@ -43,21 +43,46 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ config, onSaveConfig
   const [printerSuccess, setPrinterSuccess] = useState(false);
   const [testingWhatsApp, setTestingWhatsApp] = useState(false);
   const [whatsappConnection, setWhatsappConnection] = useState<{ reachable: boolean; status?: number; error?: string } | null>(null);
+  const baseConfig = useRef(config);
+  const currentDraft = useRef(formData);
+  currentDraft.current = formData;
+  const [sharedChanges, setSharedChanges] = useState(false);
+  const savedResetTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => () => {
+    if (savedResetTimer.current) clearTimeout(savedResetTimer.current);
+  }, []);
 
   // Sincronizar el formulario si cambia la configuración externa
   useEffect(() => {
-    setFormData({
+    const incoming = {
       ...config,
       plantillasWhatsApp: {
         ...defaultWhatsAppTemplates,
         ...(config.plantillasWhatsApp || {})
       }
-    });
+    };
+    if (JSON.stringify(currentDraft.current) !== JSON.stringify(baseConfig.current)
+      && JSON.stringify(currentDraft.current) !== JSON.stringify(incoming)) {
+      setSharedChanges(true);
+      return;
+    }
+    baseConfig.current = incoming;
+    setFormData(incoming);
+    setSharedChanges(false);
   }, [config]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMessage(null);
+    if (isSaving) return;
+    if (savedResetTimer.current) clearTimeout(savedResetTimer.current);
+    savedResetTimer.current = null;
+    setIsSaved(false);
+    if (sharedChanges) {
+      setErrorMessage('Otro dispositivo actualizó la configuración. Carga la versión compartida antes de guardar para evitar sobrescribirla.');
+      return;
+    }
 
     // Validaciones básicas
     if (!formData.nombreTaller.trim()) {
@@ -79,10 +104,11 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ config, onSaveConfig
     setIsSaving(true);
     try {
       await onSaveConfig(formData);
+      baseConfig.current = formData;
       setIsSaved(true);
       const now = new Date();
       setLastSavedTime(now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
-      setTimeout(() => setIsSaved(false), 4000);
+      savedResetTimer.current = setTimeout(() => setIsSaved(false), 4000);
     } catch (err: any) {
       console.error('Error al guardar la configuración:', err);
       setErrorMessage(err?.message || 'Error al guardar la configuración. Intente nuevamente.');
@@ -173,7 +199,12 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ config, onSaveConfig
         </div>
       )}
 
+      {sharedChanges && <div role="status" className="rounded-lg border border-amber-700/60 bg-amber-950/30 p-4 text-sm text-amber-200 space-y-3">
+        <p>La configuración cambió en otro dispositivo. Tu borrador sigue disponible; carga la versión compartida antes de guardar.</p>
+        <button type="button" disabled={isSaving} onClick={() => { baseConfig.current = config; setFormData(config); setSharedChanges(false); setErrorMessage(null); }} className="min-h-11 underline">Cargar configuración compartida</button>
+      </div>}
       <form onSubmit={handleSubmit} className="space-y-6">
+        <fieldset disabled={isSaving} className="space-y-6">
         {/* Workshop identity */}
         <div className="bg-[#161619] border border-zinc-800/80 rounded-lg p-5 space-y-4 shadow-sm">
           <div className="flex items-center gap-2.5 pb-3 border-b border-zinc-800">
@@ -410,7 +441,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ config, onSaveConfig
                 />
               </div>
             </div>
-            <p className="text-[11px] text-zinc-500">La clave se guarda en este navegador. Usa una clave limitada de tu webhook; conserva las credenciales maestras del proveedor en tu integración.</p>
+            <p className="text-[11px] text-zinc-500">La configuración se comparte con los usuarios autenticados del taller. Usa una clave limitada de tu webhook; conserva las credenciales maestras en tu integración.</p>
           </fieldset>
           <div className="flex flex-col sm:flex-row sm:items-center gap-3">
             <button
@@ -501,6 +532,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ config, onSaveConfig
                 { tag: 'cliente', desc: 'Nombre del cliente' },
                 { tag: 'dispositivo', desc: 'Marca y modelo del equipo' },
                 { tag: 'orden', desc: 'Folio / Orden (ej. OS-2402)' },
+                { tag: 'link_seguimiento', desc: 'Enlace público de seguimiento' },
                 { tag: 'estado', desc: 'Estado actual de reparación' },
                 { tag: 'tecnico', desc: 'Técnico asignado' },
               ].map(({ tag, desc }) => (
@@ -656,6 +688,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ config, onSaveConfig
             )}
           </button>
         </div>
+        </fieldset>
       </form>
     </div>
   );

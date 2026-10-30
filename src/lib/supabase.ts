@@ -37,6 +37,7 @@ export function createMockSupabaseClient() {
       costo_mano_obra: o.costoManoObra,
       total_estimado: o.totalEstimado,
       garantia_dias: o.garantiaDias,
+      entregado_at: null,
       created_at: new Date().toISOString(),
     })),
     clientes: initialClients.map((c) => ({
@@ -103,21 +104,39 @@ export function createMockSupabaseClient() {
       },
     ],
     movimientos_inventario: [],
+    configuracion_taller: [],
   };
 
   type Change = { eventType: 'INSERT' | 'UPDATE' | 'DELETE'; schema: string; table: string; new: any; old: any };
-  type Listener = { filter: { event?: string; schema?: string; table?: string }; callback: (change: Change) => void };
-  const channels = new Set<{ listeners: Listener[]; subscribed: boolean }>();
+  type Listener = { type: string; filter: { event?: string; schema?: string; table?: string; filter?: string }; callback: (payload: any) => void };
+  const channels = new Set<{ name: string; listeners: Listener[]; subscribed: boolean }>();
   let persistenceEnabled = true;
   const clone = <T,>(value: T): T => JSON.parse(JSON.stringify(value));
   const notify = (change: Change) => {
     for (const channel of channels) {
       if (!channel.subscribed) continue;
-      for (const { filter, callback } of channel.listeners) {
-        if ((!filter.event || filter.event === '*' || filter.event === change.eventType)
+      for (const { type, filter, callback } of channel.listeners) {
+        const rowFilter = filter.filter ? /^([^=]+)=eq\.([\s\S]*)$/.exec(filter.filter) : null;
+        const row = change.eventType === 'DELETE' ? change.old : change.new;
+        if (type === 'postgres_changes' && (!filter.event || filter.event === '*' || filter.event === change.eventType)
           && (!filter.schema || filter.schema === change.schema)
-          && (!filter.table || filter.table === change.table)) {
-          queueMicrotask(() => callback(clone(change)));
+          && (!filter.table || filter.table === change.table)
+          && (!filter.filter || (rowFilter && String(row[rowFilter[1]]) === rowFilter[2]))) {
+          queueMicrotask(() => { if (channel.subscribed) callback(clone(change)); });
+        }
+      }
+    }
+    if (change.table === 'ordenes') {
+      const orderId = change.new.id ?? change.old.id;
+      if (!orderId) return;
+      for (const channel of channels) {
+        if (!channel.subscribed || channel.name !== `tracking:${orderId}`) continue;
+        for (const listener of channel.listeners) {
+          if (listener.type === 'broadcast' && (!listener.filter.event || listener.filter.event === '*' || listener.filter.event === 'order_changed')) {
+            queueMicrotask(() => {
+              if (channel.subscribed) listener.callback({ type: 'broadcast', event: 'order_changed', payload: { orderId } });
+            });
+          }
         }
       }
     }
@@ -149,9 +168,20 @@ export function createMockSupabaseClient() {
   if (typeof window !== 'undefined') {
     window.addEventListener('storage', (event) => {
       if (event.key !== persistenceKey) return;
+      const previous = clone(tables);
       restoreTables();
-      for (const table of ['ordenes', 'inventario']) {
-        notify({ eventType: 'UPDATE', schema: 'public', table, new: {}, old: {} });
+      for (const table of ['ordenes', 'inventario', 'tecnicos', 'movimientos_inventario', 'configuracion_taller']) {
+        const oldRows = new Map((previous[table] ?? []).map((row: any) => [row.id, row]));
+        const newRows = new Map((tables[table] ?? []).map((row: any) => [row.id, row]));
+        for (const [id, row] of newRows) {
+          const old = oldRows.get(id);
+          if (JSON.stringify(row) !== JSON.stringify(old)) {
+            notify({ eventType: old ? 'UPDATE' : 'INSERT', schema: 'public', table, new: row, old: old ?? {} });
+          }
+        }
+        for (const [id, row] of oldRows) {
+          if (!newRows.has(id)) notify({ eventType: 'DELETE', schema: 'public', table, new: {}, old: row });
+        }
       }
     });
   }
@@ -161,7 +191,7 @@ export function createMockSupabaseClient() {
       tables[tableName] = [];
     }
 
-    let operation: 'select' | 'insert' | 'update' | 'delete' = 'select';
+    let operation: 'select' | 'insert' | 'upsert' | 'update' | 'delete' = 'select';
     let pendingInsertRows: any[] = [];
     let pendingUpdateFields: any = null;
     const filters: { column: string; value: any }[] = [];
@@ -170,6 +200,22 @@ export function createMockSupabaseClient() {
     let cardinality: 'many' | 'single' | 'maybeSingle' = 'many';
     let selectedColumns = '*';
     let execution: Promise<any> | undefined;
+    let upsertOptions: { onConflict?: string; ignoreDuplicates?: boolean } = {};
+    const stampRow = (row: any, previous?: any) => {
+      if (tableName === 'configuracion_taller') return { ...row, id: row.id ?? 'default', updated_at: new Date().toISOString() };
+      if (tableName === 'ordenes') {
+        return {
+          ...row,
+          entregado_at: previous?.entregado_at ?? (
+            row.estado === 'Entregado' && (!previous || previous.estado !== 'Entregado') ? new Date().toISOString() : null
+          ),
+        };
+      }
+      return row;
+    };
+    const configError = (rows: any[]) => tableName === 'configuracion_taller' && rows.some((row) =>
+      row.id !== 'default' || !row.config_json || typeof row.config_json !== 'object' || Array.isArray(row.config_json))
+      ? { code: '23514', message: 'La configuración debe ser un objeto y usar id default.' } : null;
     const matches = (row: any) => filters.every(({ column, value }) => {
       let expected = value;
       // PostgREST serializes JSONB and PostgreSQL text[] optimistic-lock filters.
@@ -201,11 +247,14 @@ export function createMockSupabaseClient() {
       const store = tables[tableName];
 
       if (operation === 'insert') {
-        const inserted = pendingInsertRows.map((row) => ({
+        const inserted = pendingInsertRows.map((row) => stampRow({
           ...row,
-          id: row.id || `${tableName.slice(0, 3)}-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+          id: tableName === 'configuracion_taller' ? row.id ?? 'default'
+            : row.id || `${tableName.slice(0, 3)}-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
           created_at: row.created_at || new Date().toISOString(),
         }));
+        const validationError = configError(inserted);
+        if (validationError) return { data: null, error: validationError };
         const ids = new Set(store.map((row) => row.id));
         for (const row of inserted) {
           if (ids.has(row.id)) {
@@ -222,12 +271,43 @@ export function createMockSupabaseClient() {
         return result(inserted);
       }
 
+      if (operation === 'upsert') {
+        const plannedStore = clone(store);
+        const changed: any[] = [];
+        const changes: Change[] = [];
+        const columns = (upsertOptions.onConflict ?? 'id').split(',').map((column) => column.trim());
+        for (const raw of pendingInsertRows) {
+          const incoming = tableName === 'configuracion_taller' ? { ...raw, id: raw.id ?? 'default' } : raw;
+          const index = plannedStore.findIndex((row) => columns.every((column) => row[column] === incoming[column]));
+          if (index >= 0 && upsertOptions.ignoreDuplicates) continue;
+          const previous = index >= 0 ? plannedStore[index] : undefined;
+          const row = stampRow({
+            ...previous, ...clone(incoming),
+            id: incoming.id ?? previous?.id ?? `${tableName.slice(0, 3)}-${crypto.randomUUID()}`,
+            created_at: previous?.created_at ?? incoming.created_at ?? new Date().toISOString(),
+          }, previous);
+          const validationError = configError([row]);
+          if (validationError) return { data: null, error: validationError };
+          if (index >= 0) plannedStore[index] = row;
+          else plannedStore.unshift(row);
+          changed.push(row);
+          changes.push({ eventType: previous ? 'UPDATE' : 'INSERT', schema: 'public', table: tableName, new: row, old: previous ?? {} });
+        }
+        tables[tableName] = plannedStore;
+        persistTables();
+        changes.forEach(notify);
+        return result(changed);
+      }
+
       if (operation === 'update') {
         const updated: any[] = [];
         for (let i = 0; i < store.length; i++) {
           if (matches(store[i])) {
             const previous = store[i];
-            store[i] = { ...store[i], ...clone(pendingUpdateFields) };
+            const next = stampRow({ ...store[i], ...clone(pendingUpdateFields) }, previous);
+            const validationError = configError([next]);
+            if (validationError) return { data: null, error: validationError };
+            store[i] = next;
             updated.push(store[i]);
             notify({ eventType: 'UPDATE', schema: 'public', table: tableName, new: store[i], old: previous });
           }
@@ -300,6 +380,12 @@ export function createMockSupabaseClient() {
         pendingInsertRows = Array.isArray(rows) ? rows : [rows];
         return builder;
       },
+      upsert(rows: any | any[], options?: { onConflict?: string; ignoreDuplicates?: boolean }) {
+        operation = 'upsert';
+        pendingInsertRows = Array.isArray(rows) ? rows : [rows];
+        upsertOptions = options ?? {};
+        return builder;
+      },
       update(fields: any) {
         operation = 'update';
         pendingUpdateFields = fields;
@@ -355,12 +441,13 @@ export function createMockSupabaseClient() {
         };
       },
     },
-    channel(_name: string) {
+    channel(name: string, _options?: unknown) {
       const channel = {
+        name,
         listeners: [] as Listener[],
         subscribed: false,
-        on(_event: string, filter: Listener['filter'], callback: Listener['callback']) {
-          channel.listeners.push({ filter, callback });
+        on(type: string, filter: Listener['filter'], callback: Listener['callback']) {
+          channel.listeners.push({ type, filter, callback });
           return channel;
         },
         subscribe(callback?: (status: string) => void) {
@@ -406,6 +493,40 @@ export function createMockSupabaseClient() {
     },
     from(tableName: string) {
       return createQueryBuilder(tableName);
+    },
+    async rpc(name: string, args?: { p_order_id?: string }) {
+      if (name !== 'get_order_tracking') return { data: null, error: { code: 'PGRST202', message: 'Función no encontrada.' } };
+      const id = args?.p_order_id;
+      if (typeof id !== 'string' || id.length > 64 || !/^OS-[0-9]+$/.test(id) || /\s/.test(id)) return { data: null, error: null };
+      restoreTables();
+      const order = tables.ordenes.find((row) => row.id === id);
+      if (!order) return { data: null, error: null };
+      const config = tables.configuracion_taller.find((row) => row.id === 'default')?.config_json ?? {};
+      const text = (value: unknown, fallback = '') => typeof value === 'string' ? value : fallback;
+      const finite = (value: unknown, fallback = 0) => typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+      const digits = text(order.cliente_telefono).replace(/\D/g, '');
+      const categories = ['Smartphone', 'Consola', 'Control / Mando', 'PC / Laptop', 'Tablet', 'Microsoldadura / Placa'];
+      return { data: clone({
+        id: order.id,
+        estado: text(order.estado, 'Recibido'),
+        dispositivo: {
+          marca: text(order.dispositivo_marca), modelo: text(order.dispositivo_modelo),
+          categoria: categories.includes(order.categoria_dispositivo) ? order.categoria_dispositivo : 'Smartphone',
+        },
+        fallaDeclarada: text(order.falla_declarada),
+        fotosEvidencia: Array.isArray(order.fotos_evidencia) ? order.fotos_evidencia.filter((url: unknown) => typeof url === 'string') : [],
+        costoManoObra: finite(Number(order.costo_mano_obra)), totalEstimado: finite(Number(order.total_estimado)),
+        garantiaDias: order.garantia_dias == null ? 30 : finite(Number(order.garantia_dias), 30),
+        fechaEntrega: typeof order.entregado_at === 'string' ? order.entregado_at : null,
+        clienteTelefonoMascara: digits.length >= 4 ? `***-***-${digits.slice(-4)}` : 'Sin teléfono',
+        repuestos: Array.isArray(order.repuestos_asignados) ? order.repuestos_asignados
+          .filter((part: unknown) => part && typeof part === 'object' && !Array.isArray(part))
+          .map((part: any) => ({ nombre: text(part.nombre, 'Repuesto'), cantidad: finite(part.cantidad), precioUnitario: finite(part.precioUnitario) })) : [],
+        taller: {
+          nombre: text(config.nombreTaller, 'CelMart'), telefono: text(config.telefono),
+          politicaGarantiaTexto: text(config.politicaGarantiaTexto), simboloMoneda: text(config.simboloMoneda, '$'),
+        },
+      }), error: null };
     },
   };
 }

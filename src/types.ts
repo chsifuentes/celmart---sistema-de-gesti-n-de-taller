@@ -137,6 +137,7 @@ export interface Order {
   totalEstimado: number;
   garantiaDias: number;
   fechaEntregaEstimada?: string;
+  fechaEntrega?: string;
 }
 
 export interface Technician {

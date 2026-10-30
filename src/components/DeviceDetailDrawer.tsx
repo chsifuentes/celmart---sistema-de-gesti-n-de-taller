@@ -6,7 +6,8 @@ import {
   Send,
   Camera,
   ImagePlus,
-  LoaderCircle
+  LoaderCircle,
+  CheckCircle2
 } from 'lucide-react';
 import { CHECKLIST_BY_CATEGORY, Order, OrderStatus, TechNote, InventoryItem, AssignedPart, WhatsAppTemplateKey } from '../types';
 import { determineTemplateKeyForStatus } from '../lib/whatsapp';
@@ -71,6 +72,7 @@ interface DeviceDetailDrawerProps {
   onAddPhoto: (orderId: string, photoUrl: string) => Promise<void>;
   onPrintTicket: (order: Order) => void;
   onOpenWhatsApp: (order: Order, templateKey?: WhatsAppTemplateKey) => void;
+  onDeliveryReceipt?: (order: Order) => void;
   inventory: InventoryItem[];
 }
 
@@ -85,6 +87,7 @@ export const DeviceDetailDrawer: React.FC<DeviceDetailDrawerProps> = ({
   onAddPhoto,
   onPrintTicket,
   onOpenWhatsApp,
+  onDeliveryReceipt,
   inventory,
 }) => {
   const [activeTab, setActiveTab] = useState<'expediente' | 'notas' | 'repuestos'>('expediente');
@@ -199,8 +202,12 @@ export const DeviceDetailDrawer: React.FC<DeviceDetailDrawerProps> = ({
   };
 
   const handleStatusChange = async (newStatus: OrderStatus) => {
+    if (newStatus === 'Entregado' && order.estado !== 'Listo' && order.estado !== 'Entregado') {
+      setSaveError({ orderId: order.id, message: 'Marca el equipo como Listo antes de registrar su entrega.' });
+      return;
+    }
     const saved = await runOrderAction('status', () => onUpdateStatus(order.id, newStatus));
-    if (saved && currentOrderId.current === order.id && !autoWhatsApp) {
+    if (saved && newStatus !== 'Entregado' && currentOrderId.current === order.id && !autoWhatsApp) {
       onOpenWhatsApp({ ...order, estado: newStatus }, determineTemplateKeyForStatus(newStatus));
     }
   };
@@ -285,7 +292,7 @@ export const DeviceDetailDrawer: React.FC<DeviceDetailDrawerProps> = ({
               className="bg-[#1c1c20] text-zinc-100 font-semibold px-3 py-1 rounded-lg border border-zinc-700/60 text-xs focus:outline-none focus:border-zinc-500 cursor-pointer"
             >
               {statusOptions.map((st) => (
-                <option key={st} value={st}>
+                <option key={st} value={st} disabled={st === 'Entregado' && order.estado !== 'Listo' && order.estado !== 'Entregado'}>
                   {st}
                 </option>
               ))}
@@ -324,6 +331,18 @@ export const DeviceDetailDrawer: React.FC<DeviceDetailDrawerProps> = ({
 
         {/* Drawer Body Scrollable */}
         <div className="flex-1 overflow-y-auto p-5 space-y-5 text-xs">
+          {order.estado === 'Entregado' && (
+            <section aria-label="Comprobante de entrega" className="rounded-xl border border-emerald-800/60 bg-emerald-950/25 p-4 space-y-3">
+              <h3 className="flex items-center gap-2 text-sm font-semibold text-emerald-300"><CheckCircle2 className="h-4 w-4" />Equipo entregado</h3>
+              <p className="text-zinc-300">
+                {order.fechaEntrega && Number.isFinite(Date.parse(order.fechaEntrega))
+                  ? <time dateTime={order.fechaEntrega}>{new Date(order.fechaEntrega).toLocaleString('es-MX', { dateStyle: 'medium', timeStyle: 'short' })}</time>
+                  : 'Fecha de entrega no registrada'}
+                {' · '}{order.garantiaDias} días de garantía
+              </p>
+              {onDeliveryReceipt && <button type="button" onClick={() => onDeliveryReceipt(order)} className="min-h-12 w-full px-3 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-semibold text-sm flex items-center justify-center gap-2"><MessageSquare className="h-4 w-4 shrink-0" />Enviar comprobante y garantía</button>}
+            </section>
+          )}
           {/* TAB 1: EXPEDIENTE & FICHA TÉCNICA */}
           {activeTab === 'expediente' && (
             <div className="space-y-4 animate-in fade-in duration-150">

@@ -30,6 +30,7 @@ interface WhatsAppPreviewModalProps {
   config: WorkshopConfig;
   initialTemplateKey?: WhatsAppTemplateKey;
   manualFallbackReason?: string;
+  initialMessage?: string;
   onSentWhatsApp?: (orderId: string, logNote: string) => Promise<void> | void;
 }
 
@@ -47,6 +48,7 @@ export const WhatsAppPreviewModal: React.FC<WhatsAppPreviewModalProps> = ({
   config,
   initialTemplateKey,
   manualFallbackReason,
+  initialMessage,
   onSentWhatsApp,
 }) => {
   const [selectedKey, setSelectedKey] = useState<WhatsAppTemplateKey>('cambioEstatus');
@@ -70,7 +72,7 @@ export const WhatsAppPreviewModal: React.FC<WhatsAppPreviewModalProps> = ({
       setIsSending(false);
       return;
     }
-    const sessionKey = `${order.id}:${initialTemplateKey ?? ''}`;
+    const sessionKey = `${order.id}:${initialTemplateKey ?? ''}:${initialMessage ? 'comprobante' : 'actualizacion'}`;
     // Realtime order refreshes must not replace an edited draft or reset its send guard.
     if (draftSession.current !== sessionKey) {
       draftSession.current = sessionKey;
@@ -82,14 +84,14 @@ export const WhatsAppPreviewModal: React.FC<WhatsAppPreviewModalProps> = ({
       const templates = config?.plantillasWhatsApp || defaultWhatsAppTemplates;
       const rawTemplate = templates[initialKey] || defaultWhatsAppTemplates[initialKey];
       const compiled = replaceWhatsAppVariables(rawTemplate, order, config);
-      setMessageText(compiled);
+      setMessageText(initialMessage ?? compiled);
       setSendStatus('idle');
       setIsSending(false);
       setErrorMessage(manualFallbackReason ?? null);
       setShowManualFallback(Boolean(manualFallbackReason));
       setCopied(false);
     }
-  }, [order, isOpen, initialTemplateKey, config, manualFallbackReason]);
+  }, [order, isOpen, initialTemplateKey, config, manualFallbackReason, initialMessage]);
 
   useEffect(() => () => {
     requestVersion.current += 1;
@@ -115,7 +117,7 @@ export const WhatsAppPreviewModal: React.FC<WhatsAppPreviewModalProps> = ({
   const handleResetCurrentTemplate = () => {
     const rawTemplate = templates[selectedKey] || defaultWhatsAppTemplates[selectedKey];
     const compiled = replaceWhatsAppVariables(rawTemplate, order, config);
-    setMessageText(compiled);
+    setMessageText(initialMessage ?? compiled);
   };
 
   const handleCopy = async () => {
@@ -130,7 +132,7 @@ export const WhatsAppPreviewModal: React.FC<WhatsAppPreviewModalProps> = ({
   };
 
   const recordCommunication = async (via: 'api' | 'manual', version: number) => {
-    const template = templateOptions.find((option) => option.key === selectedKey)?.label || 'Actualización';
+    const template = initialMessage ? 'Comprobante final y garantía' : templateOptions.find((option) => option.key === selectedKey)?.label || 'Actualización';
     const logNote = via === 'api'
       ? `Solicitud de WhatsApp aceptada por la API (${template}). Entrega al teléfono pendiente de confirmación.`
       : `Se abrió el enlace de WhatsApp (${template}). Envío manual pendiente de confirmación.`;

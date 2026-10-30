@@ -4,6 +4,7 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { initialOrders } from '../src/data/initialData';
 import { MobileWorkshopView, filterWorkshopOrders, getOrderUnlock, getWorkshopActions, getWorkshopLane } from '../src/components/MobileWorkshopView';
+import { DeviceDetailDrawer } from '../src/components/DeviceDetailDrawer';
 import type { Order, OrderStatus } from '../src/types';
 
 function fixture(id: string, status: OrderStatus, urgent = false): Order {
@@ -98,4 +99,30 @@ test('an empty search result keeps active cards mounted and hidden while deliver
   }
   assert.doesNotMatch(markup, /Orden already-delivered/);
   assert.match(markup, /No encontramos equipos con esa búsqueda/);
+});
+
+test('the last delivered order keeps an explicit receipt/guarantee offer after leaving the board', () => {
+  const delivered = { ...fixture('OS-DELIVERED', 'Entregado'), fechaEntrega: '2026-10-30T02:00:00.000Z', garantiaDias: 90 };
+  const markup = renderToStaticMarkup(createElement(MobileWorkshopView, {
+    orders: [delivered], searchQuery: '', lastDeliveredOrder: delivered,
+    onSearchChange: () => {}, onReceiveExpress: () => {}, onSelectOrder: () => {},
+    onUpdateStatus: async () => {}, onAddPhoto: async () => {}, onAddNote: async () => {}, onOpenWhatsApp: () => {}, onDeliveryReceipt: () => {},
+  }));
+  assert.match(markup, /Comprobante de la última entrega/);
+  assert.match(markup, /Enviar comprobante y garantía/);
+  assert.match(markup, /datetime="2026-10-30T02:00:00.000Z"/i);
+  assert.match(markup, /90 días de garantía/);
+  assert.doesNotMatch(markup, /aria-label="Orden OS-DELIVERED"/);
+});
+
+test('drawer delivery option is blocked until ready and delivered records show the saved timestamp', () => {
+  const render = (order: Order) => renderToStaticMarkup(createElement(DeviceDetailDrawer, {
+    order, isOpen: true, onClose: () => {}, onUpdateStatus: async () => {}, onAddNote: async () => {},
+    onAssignPart: async () => {}, onAddPhoto: async () => {}, onPrintTicket: () => {}, onOpenWhatsApp: () => {}, onDeliveryReceipt: () => {}, inventory: [],
+  }));
+  assert.match(render(fixture('received', 'Recibido')), /<option[^>]*value="Entregado"[^>]*disabled=""/);
+  assert.doesNotMatch(render(fixture('ready', 'Listo')), /<option[^>]*value="Entregado"[^>]*disabled=""/);
+  const markup = render({ ...fixture('delivered', 'Entregado'), fechaEntrega: '2026-10-30T02:00:00.000Z' });
+  assert.match(markup, /datetime="2026-10-30T02:00:00.000Z"/i);
+  assert.match(markup, /Enviar comprobante y garantía/);
 });

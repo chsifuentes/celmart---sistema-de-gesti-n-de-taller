@@ -32,6 +32,7 @@ export function mapOrderRow(row: Record<string, any>): Order {
     costoManoObra: Number(row.costo_mano_obra ?? 0),
     totalEstimado: Number(row.total_estimado ?? 0),
     garantiaDias: row.garantia_dias ?? 30,
+    fechaEntrega: row.entregado_at ?? undefined,
   };
 }
 
@@ -49,6 +50,7 @@ export function orderToRow(order: Order) {
     checklist_json: order.checklist, notas_tecnicas: order.notasTecnicas,
     repuestos_asignados: order.repuestosAsignados, fotos_evidencia: order.fotosEvidencia ?? [],
     costo_mano_obra: order.costoManoObra, total_estimado: order.totalEstimado, garantia_dias: order.garantiaDias,
+    entregado_at: order.fechaEntrega ?? null,
   };
 }
 

@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
-  initialWorkshopConfig,
   initialTechnicians,
   initialInventoryMovements,
 } from './data/initialData';
@@ -16,7 +15,7 @@ import {
   AssignedPart,
   WhatsAppTemplateKey
 } from './types';
-import { defaultWhatsAppTemplates, determineTemplateKeyForStatus, replaceWhatsAppVariables, sendAutomatedWhatsApp } from './lib/whatsapp';
+import { buildDeliveryWhatsAppMessage, buildWhatsAppLink, defaultWhatsAppTemplates, determineTemplateKeyForStatus, isValidWhatsAppPhone, replaceWhatsAppVariables, sendAutomatedWhatsApp } from './lib/whatsapp';
 import { Sidebar, TabType } from './components/Sidebar';
 import { Header } from './components/Header';
 import { MetricCards } from './components/MetricCards';
@@ -35,6 +34,7 @@ import { LoginView } from './components/LoginView';
 import { MobileWorkshopView } from './components/MobileWorkshopView';
 import { supabase } from './lib/supabase';
 import { getNextOrderNumber, mapInventoryRow, mapOrderRow, orderToRow, updateOrderWithRetry } from './lib/orderRepository';
+import { cacheWorkshopConfig, loadSharedWorkshopConfig, readWorkshopConfigCache, saveSharedWorkshopConfig } from './lib/configRepository';
 
 export default function App() {
   // Auth State
@@ -73,25 +73,30 @@ export default function App() {
   const [inventory, setInventory] = useState<InventoryItem[]>([]);
   const [movements, setMovements] = useState<InventoryMovement[]>(initialInventoryMovements);
   const [clients, setClients] = useState<Client[]>([]);
-  const [config, setConfig] = useState<WorkshopConfig>(() => {
+  const [config, setConfig] = useState<WorkshopConfig>(readWorkshopConfigCache);
+  const configRef = useRef(config);
+  const configVersion = useRef(0);
+  const [configError, setConfigError] = useState<string | null>(null);
+  useEffect(() => { configRef.current = config; }, [config]);
+
+  const refreshSharedConfig = useCallback(async () => {
+    const version = ++configVersion.current;
     try {
-      const saved = localStorage.getItem('celmart_workshop_config');
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        return {
-          ...initialWorkshopConfig,
-          ...parsed,
-          plantillasWhatsApp: {
-            ...defaultWhatsAppTemplates,
-            ...(parsed.plantillasWhatsApp || {})
-          }
-        };
-      }
-    } catch (e) {
-      console.warn('Error cargando configuración guardada:', e);
+      const shared = await loadSharedWorkshopConfig(configRef.current);
+      if (version !== configVersion.current) return;
+      configRef.current = shared;
+      setConfig((previous) => JSON.stringify(previous) === JSON.stringify(shared) ? previous : shared);
+      cacheWorkshopConfig(shared);
+      setConfigError(null);
+    } catch (error) {
+      if (version === configVersion.current) setConfigError(error instanceof Error ? error.message : 'No se pudo sincronizar la configuración. Se conserva la caché local.');
     }
-    return initialWorkshopConfig;
-  });
+  }, []);
+
+  useEffect(() => {
+    if (isAuthenticated) void refreshSharedConfig();
+    return () => { configVersion.current++; };
+  }, [isAuthenticated, refreshSharedConfig]);
   const [loading, setLoading] = useState(true);
   const [dataError, setDataError] = useState<string | null>(null);
   const fetchVersion = useRef(0);
@@ -106,8 +111,11 @@ export default function App() {
   const [selectedOrderForWhatsApp, setSelectedOrderForWhatsApp] = useState<Order | null>(null);
   const [selectedWhatsAppTemplateKey, setSelectedWhatsAppTemplateKey] = useState<WhatsAppTemplateKey | undefined>(undefined);
   const [manualFallbackReason, setManualFallbackReason] = useState<string | undefined>();
+  const [customWhatsAppMessage, setCustomWhatsAppMessage] = useState<string | undefined>();
+  const [lastDeliveredOrder, setLastDeliveredOrder] = useState<Order | null>(null);
+  const sendingReceipts = useRef(new Set<string>());
   const [automationNotice, setAutomationNotice] = useState<string | null>(null);
-  const [whatsAppFallbacks, setWhatsAppFallbacks] = useState<{ order: Order; templateKey: WhatsAppTemplateKey; reason: string }[]>([]);
+  const [whatsAppFallbacks, setWhatsAppFallbacks] = useState<{ order: Order; templateKey: WhatsAppTemplateKey; reason: string; message?: string }[]>([]);
 
   useEffect(() => {
     if (selectedOrderForWhatsApp || !whatsAppFallbacks.length) return;
@@ -115,10 +123,12 @@ export default function App() {
     setSelectedOrderForWhatsApp(fallback.order);
     setSelectedWhatsAppTemplateKey(fallback.templateKey);
     setManualFallbackReason(fallback.reason);
+    setCustomWhatsAppMessage(fallback.message);
     setWhatsAppFallbacks((previous) => previous.slice(1));
   }, [selectedOrderForWhatsApp, whatsAppFallbacks]);
 
   const handleOpenWhatsApp = (order: Order, templateKey?: WhatsAppTemplateKey) => {
+    setCustomWhatsAppMessage(undefined);
     setManualFallbackReason(undefined);
     setSelectedOrderForWhatsApp(order);
     setSelectedWhatsAppTemplateKey(templateKey);
@@ -126,6 +136,52 @@ export default function App() {
 
   const handleWhatsAppSent = async (orderId: string, logNote: string) => {
     await handleAddNoteToOrder(orderId, logNote, 'general');
+  };
+
+  const handleDeliveryReceipt = async (order: Order) => {
+    if (sendingReceipts.current.has(order.id)) return;
+    if (order.estado !== 'Entregado' || !order.fechaEntrega) {
+      setDataError('Registra la entrega del equipo antes de enviar su comprobante final.');
+      return;
+    }
+    const message = buildDeliveryWhatsAppMessage(order, config);
+    if (!isValidWhatsAppPhone(order.cliente.telefono)) {
+      setWhatsAppFallbacks((previous) => [...previous, { order, templateKey: 'listoEntrega', message, reason: 'Revisa el teléfono del cliente antes de enviar el comprobante.' }]);
+      return;
+    }
+    sendingReceipts.current.add(order.id);
+    setAutomationNotice(`${order.id} · Preparando comprobante final y garantía…`);
+    let popup: Window | null = null;
+    let communicationStarted = false;
+    try {
+      // Reserve during the actual tap so mobile popup blockers do not break the fallback.
+      popup = window.open('about:blank', '_blank');
+      if (popup) { popup.opener = null; popup.document.body.textContent = 'Preparando comprobante de CelMart…'; }
+    } catch { popup?.close(); popup = null; }
+    try {
+      const result = await sendAutomatedWhatsApp(order, message, config);
+      if (result.sentViaApi) {
+        communicationStarted = true;
+        popup?.close();
+        setAutomationNotice(`${order.id} · Comprobante y garantía aceptados por la API de WhatsApp.`);
+        await handleAddNoteToOrder(order.id, 'Solicitud de comprobante final y garantía aceptada por la API. Entrega al teléfono pendiente de confirmación.', 'general');
+      } else if (popup && !popup.closed) {
+        popup.location.replace(buildWhatsAppLink(order.cliente.telefono, message));
+        communicationStarted = true;
+        setAutomationNotice(`${order.id} · Comprobante preparado en WhatsApp. Completa el envío desde WhatsApp.${result.error ? ` ${result.error}` : ''}`);
+        await handleAddNoteToOrder(order.id, 'Se abrió WhatsApp con el comprobante final y garantía. Envío manual pendiente de confirmación.', 'general');
+      } else {
+        setWhatsAppFallbacks((previous) => [...previous, { order, templateKey: 'listoEntrega', message, reason: result.error || 'Usa el enlace manual para enviar el comprobante y garantía.' }]);
+      }
+    } catch {
+      if (!communicationStarted) {
+        popup?.close();
+        setWhatsAppFallbacks((previous) => [...previous, { order, templateKey: 'listoEntrega', message, reason: 'No se pudo abrir el comprobante. Continúa con el enlace manual.' }]);
+      }
+      setAutomationNotice(`${order.id} · No se pudo completar el registro del comprobante. Revisa WhatsApp antes de reenviarlo.`);
+    } finally {
+      sendingReceipts.current.delete(order.id);
+    }
   };
 
   const changeViewMode = (mode: 'recepcion' | 'taller') => {
@@ -266,28 +322,34 @@ export default function App() {
       clearTimeout(timer);
       timer = setTimeout(() => { if (active) void fetchData(true); }, 80);
     };
+    const refreshConfig = () => { if (active) void refreshSharedConfig(); };
     const channel = supabase.channel('celmart-workshop')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'ordenes' }, refresh)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'inventario' }, refresh)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'movimientos_inventario' }, refresh)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'tecnicos' }, refresh)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'configuracion_taller', filter: 'id=eq.default' }, refreshConfig)
       .subscribe((status: string) => {
         if (!active) return;
-        if (status === 'SUBSCRIBED') refresh(); // Includes reconnects after a phone sleeps.
+        if (status === 'SUBSCRIBED') { refresh(); refreshConfig(); }
         if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
           setDataError('Se perdió la sincronización en tiempo real. Comprueba la conexión y la configuración de Realtime.');
         }
       });
     window.addEventListener('online', refresh);
     window.addEventListener('focus', refresh);
+    window.addEventListener('online', refreshConfig);
+    window.addEventListener('focus', refreshConfig);
     return () => {
       active = false;
       clearTimeout(timer);
       window.removeEventListener('online', refresh);
       window.removeEventListener('focus', refresh);
+      window.removeEventListener('online', refreshConfig);
+      window.removeEventListener('focus', refreshConfig);
       void supabase.removeChannel(channel);
     };
-  }, [isAuthenticated, fetchData]);
+  }, [isAuthenticated, fetchData, refreshSharedConfig]);
 
   const applySavedOrder = (savedOrder: Order) => {
     fetchVersion.current++; // Discard older fetches that could hide a just-saved change.
@@ -355,6 +417,9 @@ export default function App() {
     const previous = orders.find((order) => order.id === orderId);
     if (!previous) throw new Error('La orden no está disponible. Vuelve a sincronizar.');
     if (previous.estado === newStatus) return;
+    if (newStatus === 'Entregado' && previous.estado !== 'Listo') {
+      throw new Error('Marca el equipo como Listo antes de registrar su entrega.');
+    }
     const { data, error } = await supabase.from('ordenes').update({ estado: newStatus })
       .eq('id', orderId).eq('estado', previous.estado).select('*').maybeSingle();
     if (error) throw new Error(error.message);
@@ -364,7 +429,8 @@ export default function App() {
     }
     const saved = mapOrderRow(data);
     applySavedOrder(saved);
-    void notifyOrderChange(saved, determineTemplateKeyForStatus(newStatus));
+    if (newStatus === 'Entregado') setLastDeliveredOrder(saved);
+    else void notifyOrderChange(saved, determineTemplateKeyForStatus(newStatus));
   };
 
   // Eliminar orden definitivamente de la base de datos
@@ -645,12 +711,13 @@ export default function App() {
   };
 
   const handleSaveConfig = async (updated: WorkshopConfig) => {
-    try {
-      localStorage.setItem('celmart_workshop_config', JSON.stringify(updated));
-    } catch (err) {
-      throw new Error('No se pudo guardar la configuración en este navegador. Revisa el espacio disponible e inténtalo de nuevo.');
-    }
-    setConfig(updated);
+    configVersion.current++;
+    const saved = await saveSharedWorkshopConfig(updated);
+    configVersion.current++;
+    configRef.current = saved;
+    setConfig(saved);
+    setConfigError(cacheWorkshopConfig(saved) ? null : 'Configuración guardada en Supabase. No se pudo actualizar la caché de este navegador.');
+    void refreshSharedConfig();
   };
 
   // Calcular carga activa real de cada técnico según órdenes no finalizadas
@@ -708,6 +775,12 @@ export default function App() {
               <button type="button" onClick={() => void fetchData(true)} className="underline underline-offset-4">Volver a sincronizar</button>
             </div>
           )}
+          {configError && (
+            <div role="alert" className="rounded-lg border border-amber-700/50 bg-amber-950/30 p-3 text-sm text-amber-200 flex flex-wrap items-center justify-between gap-3">
+              <span>{configError}</span>
+              <button type="button" onClick={() => void refreshSharedConfig()} className="underline">Sincronizar configuración</button>
+            </div>
+          )}
           {loading && <p role="status" className="text-sm text-zinc-400">Cargando datos del taller…</p>}
           {activeTab === 'dashboard' && viewMode === 'taller' && (
             <MobileWorkshopView
@@ -720,6 +793,8 @@ export default function App() {
               onAddPhoto={handleAddPhotoToOrder}
               onAddNote={handleAddNoteToOrder}
               onOpenWhatsApp={handleOpenWhatsApp}
+              lastDeliveredOrder={lastDeliveredOrder ? orders.find((order) => order.id === lastDeliveredOrder.id) ?? lastDeliveredOrder : null}
+              onDeliveryReceipt={(order) => { void handleDeliveryReceipt(order); }}
             />
           )}
           {activeTab === 'dashboard' && viewMode === 'recepcion' && (
@@ -824,6 +899,7 @@ export default function App() {
         onAddNote={handleAddNoteToOrder}
         onAssignPart={handleAssignPartToOrder}
         onAddPhoto={handleAddPhotoToOrder}
+        onDeliveryReceipt={(order) => { void handleDeliveryReceipt(order); }}
         onPrintTicket={(order) => setSelectedOrderForPrint(order)}
         onOpenWhatsApp={handleOpenWhatsApp}
         inventory={inventory}
@@ -833,6 +909,7 @@ export default function App() {
         isOpen={!!selectedOrderForPrint}
         onClose={() => setSelectedOrderForPrint(null)}
         config={config}
+        onSendDelivery={(order) => { void handleDeliveryReceipt(order); }}
       />
       <WhatsAppPreviewModal
         order={selectedOrderForWhatsApp}
@@ -844,6 +921,7 @@ export default function App() {
         config={config}
         initialTemplateKey={selectedWhatsAppTemplateKey}
         manualFallbackReason={manualFallbackReason}
+        initialMessage={customWhatsAppMessage}
         onSentWhatsApp={handleWhatsAppSent}
       />
     </div>

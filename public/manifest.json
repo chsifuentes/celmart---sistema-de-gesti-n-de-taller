@@ -1,0 +1,19 @@
+{
+  "id": "/",
+  "name": "CelMart · Gestión de Taller",
+  "short_name": "CelMart",
+  "description": "Recepción, reparación y seguimiento de equipos en tu taller.",
+  "lang": "es-MX",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#0c0c0e",
+  "theme_color": "#0c0c0e",
+  "prefer_related_applications": false,
+  "icons": [
+    { "src": "/icons/celmart-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/celmart-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/celmart-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
+    { "src": "/icons/celmart.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}

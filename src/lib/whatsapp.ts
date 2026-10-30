@@ -1,6 +1,9 @@
 import { Order, OrderStatus, WhatsAppTemplates, WhatsAppTemplateKey, WorkshopConfig } from '../types';
+import { getTrackingUrl } from './trackingUrl';
 
-export const defaultWhatsAppTemplates: WhatsAppTemplates = {
+const trackingFooter = '\n\n🔎 Sigue tu reparación: {{link_seguimiento}}';
+
+const messageTemplates: WhatsAppTemplates = {
   ingreso: `Hola *{{cliente}}* 👋\n\nTe informamos que tu equipo *{{dispositivo}}* ha ingresado exitosamente a *CelMart* con la Orden de Servicio *{{orden}}*.\n\n👨‍🔧 *Técnico Asignado:* {{tecnico}}\n📊 *Estado Inicial:* {{estado}}\n\nTe notificaremos por este medio conforme avance el diagnóstico y reparación. Si tienes dudas, puedes responder a este chat.`,
   
   cambioEstatus: `Hola *{{cliente}}* 👋\n\nActualización de tu servicio en *CelMart*:\nTu equipo *{{dispositivo}}* (Orden *{{orden}}*) ha cambiado al estado: *{{estado}}*.\n\n👨‍🔧 *Técnico Responsable:* {{tecnico}}\nEstamos trabajando para entregártelo lo antes posible con los más altos estándares de calidad.`,
@@ -8,6 +11,14 @@ export const defaultWhatsAppTemplates: WhatsAppTemplates = {
   listoEntrega: `🎉 ¡Buenas noticias, *{{cliente}}*!\n\nTu equipo *{{dispositivo}}* (Orden *{{orden}}*) ya ha superado las pruebas de control de calidad y está *LISTO PARA ENTREGA* en sucursal CelMart.\n\n👨‍🔧 *Atendido por:* {{tecnico}}\nPuedes pasar a retirarlo en nuestro horario de atención presentando tu comprobante.\n\n¡Gracias por tu preferencia!`,
   
   cotizacionPendiente: `Hola *{{cliente}}* 👋\n\nTe contactamos de *CelMart* respecto a tu equipo *{{dispositivo}}* (Orden *{{orden}}*).\n\nEl técnico *{{tecnico}}* ha completado la revisión preliminar y tenemos listo tu presupuesto/cotización de reparación. Por favor confírmanos por este medio para autorizar los repuestos e iniciar la reparación.`
+};
+
+// Every default notification offers the same public, PIN-free tracking route.
+export const defaultWhatsAppTemplates: WhatsAppTemplates = {
+  ingreso: messageTemplates.ingreso + trackingFooter,
+  cambioEstatus: messageTemplates.cambioEstatus + trackingFooter,
+  listoEntrega: messageTemplates.listoEntrega + trackingFooter,
+  cotizacionPendiente: messageTemplates.cotizacionPendiente + trackingFooter,
 };
 
 /**
@@ -62,13 +73,43 @@ export function replaceWhatsAppVariables(
   const tecnico = order.tecnico?.nombre || 'Técnico Especialista';
   const taller = config?.nombreTaller || 'CelMart';
 
-  return template
-    .replace(/\{\{cliente\}\}/gi, clienteNombre)
-    .replace(/\{\{dispositivo\}\}/gi, dispositivo)
-    .replace(/\{\{orden\}\}/gi, orden)
-    .replace(/\{\{estado\}\}/gi, estado)
-    .replace(/\{\{tecnico\}\}/gi, tecnico)
-    .replace(/\{\{taller\}\}/gi, taller);
+  const variables: Record<string, string> = {
+    cliente: clienteNombre, dispositivo, orden, estado, tecnico, taller,
+    link_seguimiento: getTrackingUrl(order.id),
+  };
+  return template.replace(/\{\{(cliente|dispositivo|orden|estado|tecnico|taller|link_seguimiento)\}\}/gi,
+    (_match, variable: string) => variables[variable.toLowerCase()]);
+}
+
+/** Customer-facing delivery receipt: no unlock codes, internal notes or API data. */
+export function buildDeliveryWhatsAppMessage(order: Order, config: WorkshopConfig): string {
+  const money = (value: number) => `${config.simboloMoneda || '$'}${value.toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} MXN`;
+  const parts = order.repuestosAsignados ?? [];
+  const partsTotal = parts.reduce((total, part) => total + part.cantidad * part.precioUnitario, 0);
+  const deliveredDate = order.fechaEntrega ? new Date(order.fechaEntrega) : null;
+  const deliveryDate = deliveredDate && !Number.isNaN(deliveredDate.getTime())
+    ? deliveredDate.toLocaleString('es-MX', { day: '2-digit', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit' })
+    : 'No registrada';
+  return [
+    `*${config.nombreTaller} · COMPROBANTE DE ENTREGA*`,
+    `Orden: *${order.id}*`,
+    `Cliente: ${order.cliente.nombre}`,
+    `Equipo: ${[order.dispositivo.marca, order.dispositivo.modelo].filter(Boolean).join(' ')}`,
+    `Fecha de entrega: ${deliveryDate}`,
+    '',
+    `Mano de obra: ${money(order.costoManoObra)}`,
+    'Refacciones:',
+    ...(parts.length ? parts.map((part) => `• ${part.cantidad} × ${part.nombre}: ${money(part.cantidad * part.precioUnitario)}`) : ['• Sin refacciones adicionales.']),
+    `*Total del servicio: ${money(order.costoManoObra + partsTotal)}*`,
+    '',
+    `*Garantía: ${order.garantiaDias} días.*`,
+    config.politicaGarantiaTexto,
+    'Conserva este comprobante para cualquier aclaración o revisión de garantía.',
+    '',
+    `Seguimiento de tu servicio: ${getTrackingUrl(order.id)}`,
+    ...(config.telefono ? [`Contacto del taller: ${config.telefono}`] : []),
+    'Gracias por tu confianza.',
+  ].join('\n');
 }
 
 /**

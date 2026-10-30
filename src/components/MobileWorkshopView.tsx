@@ -16,6 +16,8 @@ export interface MobileWorkshopViewProps {
   onAddPhoto: (orderId: string, photoUrl: string) => Promise<void>;
   onAddNote: (orderId: string, content: string, type: TechNote['tipo']) => Promise<void>;
   onOpenWhatsApp: (order: Order, templateKey?: WhatsAppTemplateKey) => void;
+  onDeliveryReceipt?: (order: Order) => void;
+  lastDeliveredOrder?: Order | null;
 }
 
 export function getWorkshopLane(status: OrderStatus): WorkshopLane | null {
@@ -245,7 +247,7 @@ const LANES = [
   { id: 'listos' as const, label: 'Listos', icon: CheckCheck, empty: 'Los equipos listos para entregar aparecerán aquí.' },
 ];
 
-export function MobileWorkshopView({ orders, searchQuery, onSearchChange, onReceiveExpress, ...cardActions }: MobileWorkshopViewProps) {
+export function MobileWorkshopView({ orders, searchQuery, onSearchChange, onReceiveExpress, lastDeliveredOrder, onDeliveryReceipt, ...cardActions }: MobileWorkshopViewProps) {
   const [activeLane, setActiveLane] = useState<WorkshopLane>('cola');
   const [statusNotice, setStatusNotice] = useState('');
   const lanes = LANES.map((lane) => ({ ...lane, orders: filterWorkshopOrders(orders, lane.id, searchQuery) }));
@@ -284,6 +286,19 @@ export function MobileWorkshopView({ orders, searchQuery, onSearchChange, onRece
       </div>
 
       {statusNotice && <p role="status" className="text-sm text-teal-300 rounded-xl bg-teal-950/25 border border-teal-900/50 p-3">{statusNotice}</p>}
+
+      {lastDeliveredOrder?.estado === 'Entregado' && (
+        <section aria-label="Comprobante de la última entrega" className="rounded-2xl border border-teal-700/50 bg-teal-950/40 p-4 space-y-3">
+          <p role="status" className="text-sm font-semibold text-teal-200">{lastDeliveredOrder.id} · Equipo entregado</p>
+          <p className="text-xs text-zinc-400">
+            {lastDeliveredOrder.fechaEntrega && Number.isFinite(Date.parse(lastDeliveredOrder.fechaEntrega))
+              ? <time dateTime={lastDeliveredOrder.fechaEntrega}>{new Date(lastDeliveredOrder.fechaEntrega).toLocaleString('es-MX', { dateStyle: 'medium', timeStyle: 'short' })}</time>
+              : 'Fecha de entrega no registrada'}
+            {' · '}{lastDeliveredOrder.garantiaDias} días de garantía
+          </p>
+          {onDeliveryReceipt && <button type="button" onClick={() => onDeliveryReceipt(lastDeliveredOrder)} className="w-full min-h-14 rounded-xl bg-teal-400 text-zinc-950 font-bold text-sm px-3 flex items-center justify-center gap-2"><MessageCircle className="h-5 w-5 shrink-0" />Enviar comprobante y garantía</button>}
+        </section>
+      )}
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 items-start" aria-label={`Equipos: ${currentLane.label.toLowerCase()}`}>
         {/* Hide cards instead of unmounting them: searches and lane changes must
