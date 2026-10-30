@@ -9,6 +9,8 @@ interface HeaderProps {
   urgentOrdersCount: number;
   onLogout?: () => void;
   onToggleMobileMenu?: () => void;
+  viewMode: 'recepcion' | 'taller';
+  onViewModeChange: (mode: 'recepcion' | 'taller') => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -18,6 +20,8 @@ export const Header: React.FC<HeaderProps> = ({
   urgentOrdersCount,
   onLogout,
   onToggleMobileMenu,
+  viewMode,
+  onViewModeChange,
 }) => {
   const [showNotifications, setShowNotifications] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
@@ -35,9 +39,13 @@ export const Header: React.FC<HeaderProps> = ({
   }, []);
 
   return (
-    <header className="border-b border-zinc-800/80 bg-[#161619] px-4 md:px-6 py-2.5 md:py-0 md:h-16 flex flex-col md:flex-row md:items-center justify-between gap-2.5 md:gap-4 sticky top-0 z-20">
+    <header className="border-b border-zinc-800/80 bg-[#161619] px-3 md:px-6 py-2.5 flex flex-col xl:flex-row xl:items-center justify-between gap-2.5 sticky top-0 z-20">
+      <div role="group" aria-label="Modo de operación" className="flex shrink-0 rounded-xl border border-zinc-700 bg-zinc-950 p-1">
+        <button type="button" aria-pressed={viewMode === 'recepcion'} onClick={() => onViewModeChange('recepcion')} className={`min-h-11 flex-1 whitespace-nowrap px-3 rounded-lg text-xs font-semibold transition-colors ${viewMode === 'recepcion' ? 'bg-zinc-100 text-zinc-950' : 'text-zinc-400 hover:text-white'}`}>🖥️ Recepción</button>
+        <button type="button" aria-pressed={viewMode === 'taller'} onClick={() => onViewModeChange('taller')} className={`min-h-11 flex-1 whitespace-nowrap px-3 rounded-lg text-xs font-semibold transition-colors ${viewMode === 'taller' ? 'bg-teal-400 text-zinc-950' : 'text-zinc-400 hover:text-white'}`}>📱 Modo Taller</button>
+      </div>
       {/* Mobile Top Bar (Row 1 on mobile, Right side on desktop) */}
-      <div className="flex items-center justify-between gap-2 w-full md:w-auto md:order-2">
+      <div className="flex items-center justify-between gap-2 w-full xl:w-auto xl:order-3">
         {/* Left Mobile: Hamburger + Brand (Hidden on desktop) */}
         <div className="flex items-center gap-2 md:hidden">
           <button
@@ -146,7 +154,7 @@ export const Header: React.FC<HeaderProps> = ({
       </div>
 
       {/* Search Bar (Row 2 on mobile, Left side on desktop) */}
-      <div className="w-full md:flex-1 md:max-w-xl md:order-1">
+      {viewMode === 'recepcion' && <div className="w-full xl:flex-1 xl:max-w-xl xl:order-2">
         <div className="relative group w-full">
           <Search className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-zinc-400 group-focus-within:text-zinc-200 transition-colors" />
           <input
@@ -174,7 +182,7 @@ export const Header: React.FC<HeaderProps> = ({
             )}
           </div>
         </div>
-      </div>
+      </div>}
     </header>
   );
 };

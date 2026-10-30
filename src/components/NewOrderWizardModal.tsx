@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { 
   X, 
   ChevronRight, 
@@ -13,17 +13,27 @@ import {
   Wrench,
   CheckCircle2,
   AlertCircle,
-  Hash
+  Hash,
+  Camera,
+  ImagePlus,
+  Loader2
 } from 'lucide-react';
-import { Order, Client, Technician, ReceptionChecklist } from '../types';
+import { Order, Client, Technician, ReceptionChecklist, DeviceCategory, CHECKLIST_BY_CATEGORY } from '../types';
+import { uploadWorkshopPhoto } from '../lib/imageStorage';
+
+const DEVICE_CATEGORIES = Object.keys(CHECKLIST_BY_CATEGORY) as DeviceCategory[];
+const initialChecklist = (): ReceptionChecklist =>
+  Object.fromEntries(CHECKLIST_BY_CATEGORY.Smartphone.map(({ key }) => [key, true]));
 
 interface NewOrderWizardModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onSaveOrder: (newOrder: Order, printNow: boolean) => void;
+  onSaveOrder: (newOrder: Order, printNow: boolean) => Promise<boolean | void> | boolean | void;
   existingClients: Client[];
   technicians: Technician[];
   nextOrderNumber: number;
+  initialPhoto?: File | null;
+  expressReception?: boolean;
 }
 
 export const NewOrderWizardModal: React.FC<NewOrderWizardModalProps> = ({
@@ -33,6 +43,8 @@ export const NewOrderWizardModal: React.FC<NewOrderWizardModalProps> = ({
   existingClients,
   technicians,
   nextOrderNumber,
+  initialPhoto = null,
+  expressReception = false,
 }) => {
   const [currentStep, setCurrentStep] = useState<1 | 2 | 3>(1);
 
@@ -44,6 +56,7 @@ export const NewOrderWizardModal: React.FC<NewOrderWizardModalProps> = ({
   const [clientEmail, setClientEmail] = useState('');
 
   // Step 2: Device Data
+  const [categoria, setCategoria] = useState<DeviceCategory>('Smartphone');
   const [marca, setMarca] = useState('Apple');
   const [modelo, setModelo] = useState('');
   const [imei, setImei] = useState('');
@@ -54,23 +67,95 @@ export const NewOrderWizardModal: React.FC<NewOrderWizardModalProps> = ({
 
   // Step 3: Reception Checklist & Fault
   const [equipoApagado, setEquipoApagado] = useState(false);
-  const [checklist, setChecklist] = useState<ReceptionChecklist>({
-    camaras: true,
-    carga: true,
-    wifi: true,
-    botones: true,
-    cristales: true,
-    biometria: true,
-    audio: true,
-    chasis: true,
-  });
+  const [checklist, setChecklist] = useState<ReceptionChecklist>(initialChecklist);
+  const [fotosEvidencia, setFotosEvidencia] = useState<string[]>([]);
+  const [isUploading, setIsUploading] = useState(false);
+  const [photoError, setPhotoError] = useState('');
+  const [isSaving, setIsSaving] = useState(false);
+  const [saveError, setSaveError] = useState('');
+  const uploadInProgress = useRef(false);
+  const processedInitialPhoto = useRef<File | null>(null);
+  const formIsOpen = useRef(false);
+  const saveInProgress = useRef(false);
   const [fallaDeclarada, setFallaDeclarada] = useState('');
   const [preDiagnostico, setPreDiagnostico] = useState('');
   const [observacionesFisicas, setObservacionesFisicas] = useState('');
   const [assignedTechId, setAssignedTechId] = useState<string>('');
   const [isUrgent, setIsUrgent] = useState(false);
   const [presupuestoEstimado, setPresupuestoEstimado] = useState(850);
-  const [printImmediate, setPrintImmediate] = useState(true);
+  const [printImmediate, setPrintImmediate] = useState(!expressReception);
+
+  const uploadPhotos = useCallback(async (files: File[]) => {
+    if (!files.length || uploadInProgress.current || saveInProgress.current) return;
+    uploadInProgress.current = true;
+    setIsUploading(true);
+    setPhotoError('');
+    const failures: string[] = [];
+    try {
+      // Process one photograph at a time to limit memory usage on mobile devices.
+      for (const file of files) {
+        try {
+          const photoUrl = await uploadWorkshopPhoto(file, 'ordenes', `recepcion-${nextOrderNumber}`);
+          if (!photoUrl) throw new Error('No se pudo guardar la imagen.');
+          setFotosEvidencia((prev) => [...prev, photoUrl]);
+        } catch {
+          failures.push(file.name);
+        }
+      }
+      if (failures.length) {
+        setPhotoError(`No se pudieron subir: ${failures.join(', ')}. Inténtalo de nuevo.`);
+      }
+    } finally {
+      uploadInProgress.current = false;
+      setIsUploading(false);
+    }
+  }, [nextOrderNumber]);
+
+  useEffect(() => {
+    if (!isOpen) {
+      formIsOpen.current = false;
+      return;
+    }
+    if (formIsOpen.current) return;
+    formIsOpen.current = true;
+    setCurrentStep(1);
+    setClientSearch('');
+    setSelectedClientId(null);
+    setClientName('');
+    setClientPhone('');
+    setClientEmail('');
+    setCategoria('Smartphone');
+    setMarca('Apple');
+    setModelo('');
+    setImei('');
+    setColor('');
+    setLockType('PIN');
+    setLockPin('');
+    setPatternDots([]);
+    setEquipoApagado(false);
+    setChecklist(initialChecklist());
+    setFotosEvidencia([]);
+    setPhotoError('');
+    setSaveError('');
+    setFallaDeclarada('');
+    setPreDiagnostico('');
+    setObservacionesFisicas('');
+    setAssignedTechId('');
+    setIsUrgent(false);
+    setPresupuestoEstimado(850);
+    setPrintImmediate(!expressReception);
+  }, [isOpen, expressReception]);
+
+  useEffect(() => {
+    if (!isOpen) {
+      processedInitialPhoto.current = null;
+      return;
+    }
+    if (!initialPhoto || processedInitialPhoto.current === initialPhoto || uploadInProgress.current || saveInProgress.current) return;
+    // Mark the File before starting async work; StrictMode must not upload it twice.
+    processedInitialPhoto.current = initialPhoto;
+    void uploadPhotos([initialPhoto]);
+  }, [isOpen, initialPhoto, uploadPhotos, isUploading, isSaving]);
 
   if (!isOpen) return null;
 
@@ -100,16 +185,34 @@ export const NewOrderWizardModal: React.FC<NewOrderWizardModalProps> = ({
     }
   };
 
-  const handleToggleChecklist = (key: keyof ReceptionChecklist) => {
+  const handleToggleChecklist = (key: string) => {
     setChecklist((prev) => ({ ...prev, [key]: !prev[key] }));
   };
 
-  const handleFinalSubmit = (e: React.FormEvent) => {
+  const handleCategoryChange = (nextCategory: DeviceCategory) => {
+    setCategoria(nextCategory);
+    setChecklist((prev) => ({
+      ...Object.fromEntries(CHECKLIST_BY_CATEGORY[nextCategory].map(({ key }) => [key, true])),
+      ...prev,
+    }));
+  };
+
+  const handlePhotoSelection = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const files: File[] = Array.from(event.target.files ?? []);
+    event.target.value = '';
+    void uploadPhotos(files);
+  };
+
+  const handleFinalSubmit = async (e: React.SyntheticEvent) => {
     e.preventDefault();
+    if (uploadInProgress.current || saveInProgress.current) return;
+    saveInProgress.current = true;
+    setIsSaving(true);
+    setSaveError('');
 
     const selectedTech = technicians.find((t) => t.id === assignedTechId);
     const now = new Date();
-    const formattedDate = `${now.getDate()} Ago · ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+    const formattedDate = `${now.getDate()} ${now.toLocaleDateString('es-MX', { month: 'short' })} · ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
 
     const newOrder: Order = {
       id: `OS-${nextOrderNumber}`,
@@ -120,6 +223,7 @@ export const NewOrderWizardModal: React.FC<NewOrderWizardModalProps> = ({
         email: clientEmail.trim() || undefined,
       },
       dispositivo: {
+        categoria,
         marca,
         modelo: modelo.trim() || `${marca} Desconocido`,
         imei: imei.trim() || 'SIN-IMEI-REGISTRADO',
@@ -140,9 +244,10 @@ export const NewOrderWizardModal: React.FC<NewOrderWizardModalProps> = ({
       preDiagnostico: preDiagnostico.trim() || undefined,
       observacionesFisicas: observacionesFisicas.trim() || 'Equipo recibido sin daños cosméticos graves adicionales.',
       checklist: {
-        ...checklist,
+        ...Object.fromEntries(CHECKLIST_BY_CATEGORY[categoria].map(({ key }) => [key, equipoApagado ? undefined : checklist[key]])),
         equipoApagado,
       },
+      fotosEvidencia,
       notasTecnicas: [
         {
           id: `note-${Date.now()}`,
@@ -158,8 +263,19 @@ export const NewOrderWizardModal: React.FC<NewOrderWizardModalProps> = ({
       garantiaDias: 90,
     };
 
-    onSaveOrder(newOrder, printImmediate);
-    onClose();
+    try {
+      const saved = await onSaveOrder(newOrder, printImmediate);
+      if (saved === false) {
+        setSaveError('No se pudo registrar la orden. Revisa la conexión e inténtalo de nuevo; tus datos siguen aquí.');
+      } else {
+        onClose();
+      }
+    } catch {
+      setSaveError('No se pudo registrar la orden. Revisa la conexión e inténtalo de nuevo; tus datos siguen aquí.');
+    } finally {
+      saveInProgress.current = false;
+      setIsSaving(false);
+    }
   };
 
   return (
@@ -172,7 +288,7 @@ export const NewOrderWizardModal: React.FC<NewOrderWizardModalProps> = ({
               OS-{nextOrderNumber}
             </div>
             <div>
-              <h2 className="text-sm font-semibold text-zinc-100">Nueva Orden de Servicio</h2>
+              <h2 className="text-sm font-semibold text-zinc-100">{expressReception ? 'Recepción exprés' : 'Nueva Orden de Servicio'}</h2>
               <p className="text-[11px] text-zinc-400 font-mono">
                 Paso {currentStep} de 3 — {currentStep === 1 ? 'Cliente' : currentStep === 2 ? 'Dispositivo' : 'Checklist & Diagnóstico'}
               </p>
@@ -180,7 +296,9 @@ export const NewOrderWizardModal: React.FC<NewOrderWizardModalProps> = ({
           </div>
           <button
             onClick={onClose}
-            className="text-zinc-400 hover:text-zinc-200 p-1 rounded-lg transition-colors"
+            disabled={isUploading || isSaving}
+            aria-label="Cerrar nueva orden"
+            className="text-zinc-400 hover:text-zinc-200 p-1 rounded-lg transition-colors disabled:opacity-40"
           >
             <X className="w-4 h-4" />
           </button>
@@ -189,7 +307,7 @@ export const NewOrderWizardModal: React.FC<NewOrderWizardModalProps> = ({
         {/* Step Progress Indicators */}
         <div className="grid grid-cols-3 border-b border-zinc-800 text-[11px] font-mono select-none bg-[#111114]">
           <div
-            onClick={() => setCurrentStep(1)}
+            onClick={() => !isUploading && !isSaving && setCurrentStep(1)}
             className={`py-2.5 px-3 flex items-center justify-center gap-2 cursor-pointer border-r border-zinc-800 transition-colors ${
               currentStep === 1
                 ? 'bg-[#1c1c20] text-zinc-100 font-semibold'
@@ -201,7 +319,7 @@ export const NewOrderWizardModal: React.FC<NewOrderWizardModalProps> = ({
           </div>
 
           <div
-            onClick={() => clientName && setCurrentStep(2)}
+            onClick={() => !isUploading && !isSaving && clientName && setCurrentStep(2)}
             className={`py-2.5 px-3 flex items-center justify-center gap-2 cursor-pointer border-r border-zinc-800 transition-colors ${
               currentStep === 2
                 ? 'bg-[#1c1c20] text-zinc-100 font-semibold'
@@ -213,7 +331,7 @@ export const NewOrderWizardModal: React.FC<NewOrderWizardModalProps> = ({
           </div>
 
           <div
-            onClick={() => clientName && modelo && setCurrentStep(3)}
+            onClick={() => !isUploading && !isSaving && clientName && modelo && setCurrentStep(3)}
             className={`py-2.5 px-3 flex items-center justify-center gap-2 cursor-pointer transition-colors ${
               currentStep === 3
                 ? 'bg-[#1c1c20] text-zinc-100 font-semibold'
@@ -224,6 +342,27 @@ export const NewOrderWizardModal: React.FC<NewOrderWizardModalProps> = ({
             <span>Checklist</span>
           </div>
         </div>
+
+        {currentStep !== 3 && (isUploading || photoError || fotosEvidencia.length > 0) && (
+          <div className="px-4 py-3 border-b border-zinc-800 bg-[#111114] text-xs">
+            {isUploading ? (
+              <p role="status" className="flex items-center gap-2 text-emerald-300">
+                <Loader2 className="w-4 h-4 animate-spin" /> Comprimiendo y guardando la foto de recepción…
+              </p>
+            ) : fotosEvidencia.length > 0 ? (
+              <div className="flex items-center gap-2 text-zinc-300">
+                <img src={fotosEvidencia[0]} alt="Vista previa de recepción" className="w-9 h-9 object-cover rounded border border-zinc-700" />
+                <span>{fotosEvidencia.length === 1 ? 'Foto de recepción lista' : `${fotosEvidencia.length} fotos de recepción listas`}. Se adjuntará al registrar la orden.</span>
+              </div>
+            ) : null}
+            {photoError && (
+              <div className="flex flex-wrap items-center gap-2 mt-1">
+                <p role="alert" className="text-rose-300">{photoError}</p>
+                {initialPhoto && <button type="button" disabled={isUploading || isSaving} onClick={() => void uploadPhotos([initialPhoto])} className="text-zinc-200 underline underline-offset-2 disabled:opacity-40">Reintentar foto inicial</button>}
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Wizard Step Body */}
         <div className="p-6 space-y-5 text-xs flex-1">
@@ -315,6 +454,21 @@ export const NewOrderWizardModal: React.FC<NewOrderWizardModalProps> = ({
           {/* STEP 2: DEVICE DATA */}
           {currentStep === 2 && (
             <div className="space-y-4 animate-in fade-in duration-150">
+              <div>
+                <label htmlFor="device-category" className="block text-zinc-400 font-mono text-[11px] mb-1">
+                  CATEGORÍA DEL DISPOSITIVO
+                </label>
+                <select
+                  id="device-category"
+                  value={categoria}
+                  onChange={(event) => handleCategoryChange(event.target.value as DeviceCategory)}
+                  className="w-full bg-[#1c1c20] text-zinc-100 px-3 py-2 rounded-lg border border-zinc-700/60 focus:border-zinc-500 focus:outline-none"
+                >
+                  {DEVICE_CATEGORIES.map((category) => (
+                    <option key={category} value={category}>{category}</option>
+                  ))}
+                </select>
+              </div>
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <div>
                   <label className="block text-zinc-400 font-mono text-[11px] mb-1">
@@ -332,6 +486,12 @@ export const NewOrderWizardModal: React.FC<NewOrderWizardModalProps> = ({
                     <option value="Dell">Dell / PC</option>
                     <option value="Huawei">Huawei</option>
                     <option value="Oppo">Oppo</option>
+                    <option value="Sony">Sony / PlayStation</option>
+                    <option value="Microsoft">Microsoft / Xbox</option>
+                    <option value="Nintendo">Nintendo</option>
+                    <option value="HP">HP</option>
+                    <option value="Lenovo">Lenovo</option>
+                    <option value="ASUS">ASUS</option>
                     <option value="Otro">Otra marca</option>
                   </select>
                 </div>
@@ -352,14 +512,13 @@ export const NewOrderWizardModal: React.FC<NewOrderWizardModalProps> = ({
 
                 <div className="sm:col-span-2">
                   <label className="block text-zinc-400 font-mono text-[11px] mb-1">
-                    IMEI O NÚMERO DE SERIE *
+                    {categoria === 'Smartphone' || categoria === 'Tablet' ? 'IMEI O NÚMERO DE SERIE' : 'NÚMERO DE SERIE / IDENTIFICADOR'}
                   </label>
                   <input
                     type="text"
-                    required
                     value={imei}
                     onChange={(e) => setImei(e.target.value)}
-                    placeholder="354829116470021"
+                    placeholder={categoria === 'Smartphone' ? '354829116470021' : 'Serie o identificación de equipo / placa'}
                     className="w-full bg-[#1c1c20] text-zinc-100 font-mono px-3 py-2 rounded-lg border border-zinc-700/60 focus:border-zinc-500 focus:outline-none"
                   />
                 </div>
@@ -529,24 +688,15 @@ export const NewOrderWizardModal: React.FC<NewOrderWizardModalProps> = ({
                 <div className={`grid grid-cols-2 sm:grid-cols-4 gap-2 transition-opacity ${
                   equipoApagado ? 'opacity-40 pointer-events-none' : 'opacity-100'
                 }`}>
-                  {[
-                    { key: 'cristales', label: 'Pantalla / Cristales' },
-                    { key: 'camaras', label: 'Cámaras (Del/Tras)' },
-                    { key: 'carga', label: 'Puerto de Carga' },
-                    { key: 'wifi', label: 'Wi-Fi / Red' },
-                    { key: 'botones', label: 'Botones / Volumen' },
-                    { key: 'biometria', label: 'FaceID / Huella' },
-                    { key: 'audio', label: 'Micrófono / Audio' },
-                    { key: 'chasis', label: 'Chasis sin doblar' },
-                  ].map(({ key, label }) => {
-                    const k = key as keyof ReceptionChecklist;
-                    const isOk = !equipoApagado && checklist[k];
+                  {CHECKLIST_BY_CATEGORY[categoria].map(({ key, label }) => {
+                    const isOk = !equipoApagado && checklist[key];
                     return (
                       <button
                         key={key}
                         type="button"
                         disabled={equipoApagado}
-                        onClick={() => handleToggleChecklist(k)}
+                        onClick={() => handleToggleChecklist(key)}
+                        aria-pressed={Boolean(isOk)}
                         className={`p-2.5 rounded-lg border text-left flex items-center justify-between transition-colors ${
                           equipoApagado
                             ? 'bg-[#1c1c20] border-zinc-800 text-zinc-500'
@@ -575,6 +725,35 @@ export const NewOrderWizardModal: React.FC<NewOrderWizardModalProps> = ({
                   </p>
                 )}
               </div>
+
+              <section className="p-4 rounded-lg bg-[#111114] border border-zinc-800 space-y-3" aria-labelledby="reception-photos-title">
+                <h3 id="reception-photos-title" className="font-semibold text-zinc-200 flex items-center gap-2">
+                  <Camera className="w-4 h-4" /> Evidencia Fotográfica de Recepción
+                </h3>
+                <p className="text-[11px] text-zinc-400">Registra daños, golpes y accesorios. Las fotos se comprimen a WebP antes de subirlas.</p>
+                <div className="flex flex-wrap gap-2">
+                  <label className={`flex items-center gap-2 min-h-11 px-3 py-2 rounded-lg bg-zinc-800 text-zinc-100 border border-zinc-700 cursor-pointer ${isUploading || isSaving ? 'opacity-40' : 'hover:bg-zinc-700'}`}>
+                    <Camera className="w-4 h-4" /> Tomar foto
+                    <input type="file" accept="image/*" capture="environment" aria-label="Tomar foto de recepción" disabled={isUploading || isSaving} onChange={handlePhotoSelection} className="sr-only" />
+                  </label>
+                  <label className={`flex items-center gap-2 min-h-11 px-3 py-2 rounded-lg bg-zinc-800 text-zinc-100 border border-zinc-700 cursor-pointer ${isUploading || isSaving ? 'opacity-40' : 'hover:bg-zinc-700'}`}>
+                    <ImagePlus className="w-4 h-4" /> Subir archivos
+                    <input type="file" accept="image/*" multiple aria-label="Subir fotos de recepción" disabled={isUploading || isSaving} onChange={handlePhotoSelection} className="sr-only" />
+                  </label>
+                </div>
+                {isUploading && <p role="status" className="flex items-center gap-2 text-emerald-300"><Loader2 className="w-4 h-4 animate-spin" /> Comprimiendo y subiendo fotos…</p>}
+                {photoError && <p role="alert" className="text-rose-300">{photoError}</p>}
+                {fotosEvidencia.length > 0 && (
+                  <div className="grid grid-cols-3 sm:grid-cols-4 gap-2">
+                    {fotosEvidencia.map((url, index) => (
+                      <div key={url} className="relative rounded-lg overflow-hidden border border-zinc-700">
+                        <img src={url} alt={`Evidencia de recepción ${index + 1}`} className="w-full aspect-square object-cover" />
+                        <button type="button" disabled={isUploading || isSaving} aria-label={`Quitar foto ${index + 1}`} onClick={() => setFotosEvidencia((prev) => prev.filter((_, photoIndex) => photoIndex !== index))} className="absolute top-1 right-1 p-1.5 rounded-full bg-black/80 text-white disabled:opacity-40"><X className="w-3.5 h-3.5" /></button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </section>
 
               {/* Falla declarada */}
               <div>
@@ -681,6 +860,8 @@ export const NewOrderWizardModal: React.FC<NewOrderWizardModalProps> = ({
           )}
         </div>
 
+        {saveError && <p role="alert" className="px-4 pb-3 text-xs text-rose-300">{saveError}</p>}
+
         {/* Wizard Footer Controls */}
         <div className="p-4 border-t border-zinc-800 bg-[#111114] flex items-center justify-between">
           <div>
@@ -688,6 +869,7 @@ export const NewOrderWizardModal: React.FC<NewOrderWizardModalProps> = ({
               <button
                 type="button"
                 onClick={() => setCurrentStep((prev) => (prev - 1) as any)}
+                disabled={isUploading || isSaving}
                 className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs transition-colors"
               >
                 <ChevronLeft className="w-4 h-4" />
@@ -697,6 +879,7 @@ export const NewOrderWizardModal: React.FC<NewOrderWizardModalProps> = ({
               <button
                 type="button"
                 onClick={onClose}
+                disabled={isUploading || isSaving}
                 className="px-3 py-2 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-400 hover:text-zinc-200 text-xs transition-colors"
               >
                 Cancelar
@@ -713,7 +896,7 @@ export const NewOrderWizardModal: React.FC<NewOrderWizardModalProps> = ({
                   if (currentStep === 2 && !modelo.trim()) return;
                   setCurrentStep((prev) => (prev + 1) as any);
                 }}
-                disabled={currentStep === 1 && !clientName.trim()}
+                disabled={isUploading || isSaving || (currentStep === 1 && !clientName.trim()) || (currentStep === 2 && !modelo.trim())}
                 className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-zinc-100 hover:bg-white text-zinc-950 font-semibold text-xs transition-all disabled:opacity-40"
               >
                 <span>Siguiente</span>
@@ -723,10 +906,11 @@ export const NewOrderWizardModal: React.FC<NewOrderWizardModalProps> = ({
               <button
                 type="button"
                 onClick={handleFinalSubmit}
-                className="flex items-center gap-2 px-5 py-2 rounded-lg bg-zinc-100 hover:bg-white text-zinc-950 font-bold text-xs shadow-md transition-all"
+                disabled={isUploading || isSaving}
+                className="flex items-center gap-2 px-5 py-2 rounded-lg bg-zinc-100 hover:bg-white text-zinc-950 font-bold text-xs shadow-md transition-all disabled:opacity-40"
               >
-                <CheckCircle2 className="w-4 h-4" />
-                <span>Registrar Orden de Servicio</span>
+                {isSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
+                <span>{isSaving ? 'Guardando orden…' : 'Registrar Orden de Servicio'}</span>
               </button>
             )}
           </div>

@@ -1,34 +1,74 @@
-import React, { useState } from 'react';
-import { 
-  X, 
-  Printer, 
-  MessageSquare, 
-  Clock, 
-  Wrench, 
-  ShieldCheck, 
-  Smartphone, 
-  Lock, 
-  User, 
-  Phone, 
-  Mail, 
-  Plus, 
-  Send, 
-  ChevronDown,
-  CheckCircle2,
-  AlertTriangle,
-  FileText,
-  DollarSign
+import React, { useEffect, useRef, useState } from 'react';
+import {
+  X,
+  Printer,
+  MessageSquare,
+  Send,
+  Camera,
+  ImagePlus,
+  LoaderCircle
 } from 'lucide-react';
-import { Order, OrderStatus, TechNote, InventoryItem, AssignedPart, WhatsAppTemplateKey } from '../types';
+import { CHECKLIST_BY_CATEGORY, Order, OrderStatus, TechNote, InventoryItem, AssignedPart, WhatsAppTemplateKey } from '../types';
 import { determineTemplateKeyForStatus } from '../lib/whatsapp';
+import { uploadWorkshopPhoto } from '../lib/imageStorage';
+
+function EvidencePreview({ url, onClose }: { url: string; onClose: () => void }) {
+  const closeButton = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    const previousFocus = document.activeElement;
+    closeButton.current?.focus();
+    return () => {
+      if (previousFocus instanceof HTMLElement && previousFocus.isConnected) previousFocus.focus();
+    };
+  }, []);
+
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label="Vista ampliada de evidencia fotográfica"
+      className="fixed inset-0 z-[60] bg-black/95 p-4 flex items-center justify-center"
+      onClick={onClose}
+      onKeyDown={(event) => {
+        if (event.key === 'Escape') {
+          event.stopPropagation();
+          onClose();
+        }
+        if (event.key === 'Tab') {
+          event.preventDefault();
+          closeButton.current?.focus();
+        }
+      }}
+    >
+      <button
+        ref={closeButton}
+        type="button"
+        onClick={onClose}
+        aria-label="Cerrar foto ampliada"
+        className="absolute top-4 right-4 p-3 rounded-full bg-zinc-800 hover:bg-zinc-700 text-white focus:outline-none focus:ring-2 focus:ring-white"
+      >
+        <X className="w-5 h-5" />
+      </button>
+      <img
+        src={url}
+        alt="Evidencia del dispositivo en tamaño completo"
+        className="max-w-full max-h-[90dvh] object-contain rounded-lg"
+        onClick={(event) => event.stopPropagation()}
+      />
+    </div>
+  );
+}
 
 interface DeviceDetailDrawerProps {
   order: Order | null;
   isOpen: boolean;
   onClose: () => void;
-  onUpdateStatus: (orderId: string, status: OrderStatus) => void;
-  onAddNote: (orderId: string, noteContent: string, noteType: TechNote['tipo']) => void;
-  onAssignPart: (orderId: string, part: AssignedPart) => void;
+  onUpdateStatus: (orderId: string, status: OrderStatus) => Promise<void>;
+  autoWhatsApp?: boolean;
+  onAddNote: (orderId: string, noteContent: string, noteType: TechNote['tipo']) => Promise<void>;
+  onAssignPart: (orderId: string, part: AssignedPart) => Promise<void>;
+  onAddPhoto: (orderId: string, photoUrl: string) => Promise<void>;
   onPrintTicket: (order: Order) => void;
   onOpenWhatsApp: (order: Order, templateKey?: WhatsAppTemplateKey) => void;
   inventory: InventoryItem[];
@@ -39,8 +79,10 @@ export const DeviceDetailDrawer: React.FC<DeviceDetailDrawerProps> = ({
   isOpen,
   onClose,
   onUpdateStatus,
+  autoWhatsApp = false,
   onAddNote,
   onAssignPart,
+  onAddPhoto,
   onPrintTicket,
   onOpenWhatsApp,
   inventory,
@@ -49,6 +91,23 @@ export const DeviceDetailDrawer: React.FC<DeviceDetailDrawerProps> = ({
   const [newNote, setNewNote] = useState('');
   const [newNoteType, setNewNoteType] = useState<TechNote['tipo']>('diagnostico');
   const [selectedInventoryPartId, setSelectedInventoryPartId] = useState('');
+  const [photoUpload, setPhotoUpload] = useState<{ orderId: string; busy: boolean; error?: string } | null>(null);
+  const [previewPhoto, setPreviewPhoto] = useState<{ orderId: string; url: string } | null>(null);
+  const cameraInput = useRef<HTMLInputElement>(null);
+  const fileInput = useRef<HTMLInputElement>(null);
+  const uploadingPhotos = useRef(false);
+  const [pendingAction, setPendingAction] = useState<'note' | 'part' | 'status' | null>(null);
+  const [saveError, setSaveError] = useState<{ orderId: string; message: string } | null>(null);
+  const savingAction = useRef(false);
+  const currentOrderId = useRef(order?.id);
+
+  useEffect(() => {
+    currentOrderId.current = order?.id;
+    setNewNote('');
+    setSelectedInventoryPartId('');
+    setPreviewPhoto(null);
+    setActiveTab('expediente');
+  }, [order?.id]);
 
   if (!isOpen || !order) return null;
 
@@ -57,27 +116,93 @@ export const DeviceDetailDrawer: React.FC<DeviceDetailDrawerProps> = ({
     0
   );
   const totalCobro = order.costoManoObra + totalPiezas;
+  const category = order.dispositivo.categoria || 'Smartphone';
+  const categoryChecklist = CHECKLIST_BY_CATEGORY[category] || CHECKLIST_BY_CATEGORY.Smartphone;
+  // Keep saved legacy/custom checklist keys visible even if category templates evolve.
+  const checklistItems = [
+    ...categoryChecklist,
+    ...Object.keys(order.checklist)
+      .filter((key) => key !== 'equipoApagado' && !categoryChecklist.some((item) => item.key === key))
+      .map((key) => ({ key, label: key })),
+  ];
 
-  const handleAddNoteSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!newNote.trim()) return;
-    onAddNote(order.id, newNote.trim(), newNoteType);
-    setNewNote('');
+  const handlePhotoSelection = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from<File>(event.target.files || []);
+    event.target.value = '';
+    if (!files.length || uploadingPhotos.current) return;
+
+    const orderId = order.id;
+    uploadingPhotos.current = true;
+    setPhotoUpload({ orderId, busy: true });
+    try {
+      for (const file of files) {
+        const photoUrl = await uploadWorkshopPhoto(file, 'ordenes', orderId);
+        if (!photoUrl) throw new Error('No se pudo subir la foto. Comprueba la conexión y vuelve a intentarlo.');
+        await onAddPhoto(orderId, photoUrl);
+      }
+      setPhotoUpload({ orderId, busy: false });
+    } catch (error) {
+      setPhotoUpload({
+        orderId,
+        busy: false,
+        error: error instanceof Error ? error.message : 'No se pudo guardar la evidencia fotográfica.',
+      });
+    } finally {
+      uploadingPhotos.current = false;
+    }
   };
 
-  const handleAssignPartSubmit = () => {
+  const runOrderAction = async (action: 'note' | 'part' | 'status', save: () => Promise<void>) => {
+    if (savingAction.current) return false;
+    const orderId = order.id;
+    savingAction.current = true;
+    setPendingAction(action);
+    setSaveError(null);
+    try {
+      await save();
+      return true;
+    } catch (error) {
+      setSaveError({
+        orderId,
+        message: error instanceof Error ? error.message : 'No se pudieron guardar los cambios. Inténtalo de nuevo.',
+      });
+      return false;
+    } finally {
+      savingAction.current = false;
+      setPendingAction(null);
+    }
+  };
+
+  const handleAddNoteSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newNote.trim()) return;
+    const submittedText = newNote;
+    const saved = await runOrderAction('note', () => onAddNote(order.id, submittedText.trim(), newNoteType));
+    if (saved && currentOrderId.current === order.id) {
+      setNewNote((current) => current === submittedText ? '' : current);
+    }
+  };
+
+  const handleAssignPartSubmit = async () => {
     if (!selectedInventoryPartId) return;
     const invItem = inventory.find((i) => i.id === selectedInventoryPartId);
     if (!invItem) return;
 
-    onAssignPart(order.id, {
-      id: `part-${Date.now()}`,
+    const saved = await runOrderAction('part', () => onAssignPart(order.id, {
+      id: `part-${Date.now()}-${Math.random().toString(36).slice(2)}`,
       nombre: invItem.nombre,
       sku: invItem.sku,
       cantidad: 1,
       precioUnitario: invItem.precioVenta,
-    });
-    setSelectedInventoryPartId('');
+    }));
+    if (saved && currentOrderId.current === order.id) setSelectedInventoryPartId('');
+  };
+
+  const handleStatusChange = async (newStatus: OrderStatus) => {
+    const saved = await runOrderAction('status', () => onUpdateStatus(order.id, newStatus));
+    if (saved && currentOrderId.current === order.id && !autoWhatsApp) {
+      onOpenWhatsApp({ ...order, estado: newStatus }, determineTemplateKeyForStatus(newStatus));
+    }
   };
 
   const statusOptions: OrderStatus[] = [
@@ -88,6 +213,7 @@ export const DeviceDetailDrawer: React.FC<DeviceDetailDrawerProps> = ({
     'En Reparación',
     'Listo',
     'Entregado',
+    'Garantía',
   ];
 
   return (
@@ -138,7 +264,9 @@ export const DeviceDetailDrawer: React.FC<DeviceDetailDrawerProps> = ({
 
             <button
               onClick={onClose}
-              className="p-1.5 rounded-lg text-zinc-400 hover:text-zinc-100 hover:bg-[#1c1c20] transition-colors"
+              disabled={pendingAction !== null || photoUpload?.busy === true}
+              aria-label="Cerrar expediente"
+              className="p-1.5 rounded-lg text-zinc-400 hover:text-zinc-100 hover:bg-[#1c1c20] transition-colors disabled:opacity-40 disabled:cursor-wait"
             >
               <X className="w-4 h-4" />
             </button>
@@ -151,11 +279,9 @@ export const DeviceDetailDrawer: React.FC<DeviceDetailDrawerProps> = ({
             <span className="text-zinc-400 font-mono text-[11px]">ESTADO ACTUAL:</span>
             <select
               value={order.estado}
-              onChange={(e) => {
-                const newStatus = e.target.value as OrderStatus;
-                onUpdateStatus(order.id, newStatus);
-                onOpenWhatsApp({ ...order, estado: newStatus }, determineTemplateKeyForStatus(newStatus));
-              }}
+              onChange={(e) => { void handleStatusChange(e.target.value as OrderStatus); }}
+              disabled={pendingAction !== null}
+              aria-label="Estado de la orden"
               className="bg-[#1c1c20] text-zinc-100 font-semibold px-3 py-1 rounded-lg border border-zinc-700/60 text-xs focus:outline-none focus:border-zinc-500 cursor-pointer"
             >
               {statusOptions.map((st) => (
@@ -170,6 +296,10 @@ export const DeviceDetailDrawer: React.FC<DeviceDetailDrawerProps> = ({
             Ingreso: <span className="text-zinc-200">{order.ingreso}</span>
           </div>
         </div>
+
+        {saveError?.orderId === order.id && (
+          <p role="alert" className="px-5 py-3 text-xs text-rose-300 bg-rose-950/30 border-b border-rose-900/50">{saveError.message}</p>
+        )}
 
         {/* Tab Navigation */}
         <div className="flex border-b border-zinc-800/80 text-xs font-medium px-4 gap-2 bg-[#111114]">
@@ -203,6 +333,10 @@ export const DeviceDetailDrawer: React.FC<DeviceDetailDrawerProps> = ({
                   ESPECIFICACIONES DEL DISPOSITIVO
                 </h4>
                 <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 font-mono">
+                  <div>
+                    <span className="text-[10px] text-zinc-400 block">CATEGORÍA</span>
+                    <span className="text-zinc-200 font-sans">{category}</span>
+                  </div>
                   <div>
                     <span className="text-[10px] text-zinc-400 block">MARCA / MODELO</span>
                     <span className="text-zinc-100 font-sans font-semibold">
@@ -289,32 +423,83 @@ export const DeviceDetailDrawer: React.FC<DeviceDetailDrawerProps> = ({
 
                 {order.checklist.equipoApagado ? (
                   <div className="p-3 rounded-lg bg-[#1c1c20] border border-amber-900/40 text-[11px] text-amber-300/90 font-mono">
-                    ⚠️ El equipo ingresó apagado o sin encender. Las pruebas funcionales (cámaras, audio, red, biometría) se realizarán tras su encendido en laboratorio.
+                    ⚠️ El equipo ingresó apagado o sin encender. Las pruebas funcionales de este dispositivo se realizarán tras su encendido en laboratorio.
                   </div>
                 ) : (
                   <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                    {Object.entries(order.checklist)
-                      .filter(([key]) => key !== 'equipoApagado')
-                      .map(([key, val]) => (
+                    {checklistItems.map(({ key, label }) => {
+                      const val = order.checklist[key];
+                      return (
                         <div
                           key={key}
                           className={`p-2 rounded-lg border flex items-center justify-between text-[11px] ${
-                            val
+                            val === undefined
+                              ? 'bg-[#1c1c20] border-zinc-700/60 text-zinc-500'
+                              : val
                               ? 'bg-[#1c1c20] border-emerald-800/40 text-zinc-300'
                               : 'bg-rose-950/30 border-rose-900/50 text-rose-300 font-semibold'
                           }`}
                         >
-                          <span className="capitalize">{key}</span>
+                          <span>{label}</span>
                           <span
+                            aria-label={val === undefined ? 'Sin registrar' : val ? 'Correcto' : 'Con falla'}
+                            title={val === undefined ? 'Sin registrar' : val ? 'Correcto' : 'Con falla'}
                             className={`w-2 h-2 rounded-full ${
-                              val ? 'bg-emerald-400' : 'bg-rose-400'
+                              val === undefined ? 'bg-zinc-600' : val ? 'bg-emerald-400' : 'bg-rose-400'
                             }`}
                           />
                         </div>
-                      ))}
+                      );
+                    })}
                   </div>
                 )}
               </div>
+
+              <section className="p-4 rounded-lg bg-[#111114] border border-zinc-800/80 space-y-3" aria-label="Evidencia fotográfica">
+                <h4 className="text-[11px] font-mono uppercase font-semibold text-zinc-400 tracking-wider">
+                  EVIDENCIA FOTOGRÁFICA ({order.fotosEvidencia?.length || 0})
+                </h4>
+                {order.fotosEvidencia?.length ? (
+                  <div className="grid grid-cols-3 sm:grid-cols-4 gap-2">
+                    {order.fotosEvidencia.map((url, index) => (
+                      <button
+                        key={`${url}-${index}`}
+                        type="button"
+                        onClick={() => setPreviewPhoto({ orderId: order.id, url })}
+                        aria-label={`Ampliar foto de evidencia ${index + 1}`}
+                        className="aspect-square overflow-hidden rounded-lg border border-zinc-700 hover:border-zinc-300 focus:outline-none focus:ring-2 focus:ring-zinc-300"
+                      >
+                        <img src={url} alt={`Evidencia del equipo ${index + 1}`} loading="lazy" className="w-full h-full object-cover" />
+                      </button>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-zinc-500">Aún no hay fotos de recepción o reparación.</p>
+                )}
+                <input ref={cameraInput} type="file" accept="image/*" capture="environment" className="hidden" aria-label="Tomar foto de evidencia" onChange={handlePhotoSelection} disabled={photoUpload?.busy} />
+                <input ref={fileInput} type="file" accept="image/*" multiple className="hidden" aria-label="Subir fotos de evidencia" onChange={handlePhotoSelection} disabled={photoUpload?.busy} />
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => cameraInput.current?.click()}
+                    disabled={photoUpload?.busy}
+                    className="min-h-11 px-3 py-2 flex items-center gap-2 rounded-lg bg-zinc-100 hover:bg-white disabled:opacity-50 text-zinc-950 font-semibold"
+                  >
+                    {photoUpload?.busy ? <LoaderCircle className="w-4 h-4 animate-spin" /> : <Camera className="w-4 h-4" />}
+                    {photoUpload?.busy ? 'Guardando evidencia…' : '+ Tomar / Subir Foto'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => fileInput.current?.click()}
+                    disabled={photoUpload?.busy}
+                    className="min-h-11 px-3 py-2 flex items-center gap-2 rounded-lg border border-zinc-700 text-zinc-200 hover:bg-zinc-800 disabled:opacity-50"
+                  >
+                    <ImagePlus className="w-4 h-4" /> Elegir archivos
+                  </button>
+                </div>
+                {photoUpload?.busy && <p role="status" className="text-zinc-400">Comprimiendo a WebP y guardando en el expediente…</p>}
+                {photoUpload?.orderId === order.id && photoUpload.error && <p role="alert" className="text-rose-300">{photoUpload.error}</p>}
+              </section>
             </div>
           )}
 
@@ -348,11 +533,11 @@ export const DeviceDetailDrawer: React.FC<DeviceDetailDrawerProps> = ({
                 <div className="flex justify-end">
                   <button
                     type="submit"
-                    disabled={!newNote.trim()}
+                    disabled={!newNote.trim() || pendingAction !== null}
                     className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-zinc-100 hover:bg-white disabled:opacity-40 text-zinc-950 font-semibold text-xs transition-all"
                   >
                     <Send className="w-3.5 h-3.5" />
-                    <span>Publicar Nota</span>
+                    <span>{pendingAction === 'note' ? 'Guardando…' : 'Publicar Nota'}</span>
                   </button>
                 </div>
               </form>
@@ -391,22 +576,23 @@ export const DeviceDetailDrawer: React.FC<DeviceDetailDrawerProps> = ({
                 <div className="flex gap-2">
                   <select
                     value={selectedInventoryPartId}
+                    disabled={pendingAction !== null}
                     onChange={(e) => setSelectedInventoryPartId(e.target.value)}
                     className="flex-1 bg-[#1c1c20] text-zinc-100 px-3 py-1.5 rounded-lg border border-zinc-700/60 text-xs focus:outline-none"
                   >
                     <option value="">— Seleccionar repuesto disponible —</option>
                     {inventory.map((inv) => (
-                      <option key={inv.id} value={inv.id}>
+                      <option key={inv.id} value={inv.id} disabled={inv.stockActual <= 0}>
                         {inv.nombre} (${inv.precioVenta} MXN) - Stock: {inv.stockActual}
                       </option>
                     ))}
                   </select>
                   <button
                     onClick={handleAssignPartSubmit}
-                    disabled={!selectedInventoryPartId}
+                    disabled={!selectedInventoryPartId || pendingAction !== null}
                     className="px-3.5 py-1.5 rounded-lg bg-zinc-100 hover:bg-white disabled:opacity-40 text-zinc-950 font-semibold text-xs shrink-0"
                   >
-                    + Asignar
+                    {pendingAction === 'part' ? 'Guardando…' : '+ Asignar'}
                   </button>
                 </div>
               </div>
@@ -490,6 +676,9 @@ export const DeviceDetailDrawer: React.FC<DeviceDetailDrawerProps> = ({
           </button>
         </div>
       </div>
+      {previewPhoto?.orderId === order.id && (
+        <EvidencePreview url={previewPhoto.url} onClose={() => setPreviewPhoto(null)} />
+      )}
     </div>
   );
 };

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   initialWorkshopConfig,
   initialTechnicians,
@@ -16,7 +16,7 @@ import {
   AssignedPart,
   WhatsAppTemplateKey
 } from './types';
-import { defaultWhatsAppTemplates } from './lib/whatsapp';
+import { defaultWhatsAppTemplates, determineTemplateKeyForStatus, replaceWhatsAppVariables, sendAutomatedWhatsApp } from './lib/whatsapp';
 import { Sidebar, TabType } from './components/Sidebar';
 import { Header } from './components/Header';
 import { MetricCards } from './components/MetricCards';
@@ -32,7 +32,9 @@ import { DeviceDetailDrawer } from './components/DeviceDetailDrawer';
 import { ThermalReceiptModal } from './components/ThermalReceiptModal';
 import { WhatsAppPreviewModal } from './components/WhatsAppPreviewModal';
 import { LoginView } from './components/LoginView';
+import { MobileWorkshopView } from './components/MobileWorkshopView';
 import { supabase } from './lib/supabase';
+import { getNextOrderNumber, mapInventoryRow, mapOrderRow, orderToRow, updateOrderWithRetry } from './lib/orderRepository';
 
 export default function App() {
   // Auth State
@@ -44,6 +46,13 @@ export default function App() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [globalSearch, setGlobalSearch] = useState('');
   const [tableStatusFilter, setTableStatusFilter] = useState<string>('Todos');
+  const [viewMode, setViewMode] = useState<'recepcion' | 'taller'>(() => {
+    try {
+      const saved = localStorage.getItem('celmart_view_mode');
+      if (saved === 'recepcion' || saved === 'taller') return saved;
+    } catch { /* The viewport still provides a useful default if storage is unavailable. */ }
+    return window.innerWidth < 768 ? 'taller' : 'recepcion';
+  });
 
   // Database Data States
   const [orders, setOrders] = useState<Order[]>([]);
@@ -84,69 +93,100 @@ export default function App() {
     return initialWorkshopConfig;
   });
   const [loading, setLoading] = useState(true);
+  const [dataError, setDataError] = useState<string | null>(null);
+  const fetchVersion = useRef(0);
 
   // Modals & Drawers State
   const [isNewOrderModalOpen, setIsNewOrderModalOpen] = useState(false);
+  const [expressReception, setExpressReception] = useState(false);
+  const [receptionPhoto, setReceptionPhoto] = useState<File | null>(null);
+  const expressCamera = useRef<HTMLInputElement>(null);
   const [selectedOrderForDrawer, setSelectedOrderForDrawer] = useState<Order | null>(null);
   const [selectedOrderForPrint, setSelectedOrderForPrint] = useState<Order | null>(null);
   const [selectedOrderForWhatsApp, setSelectedOrderForWhatsApp] = useState<Order | null>(null);
   const [selectedWhatsAppTemplateKey, setSelectedWhatsAppTemplateKey] = useState<WhatsAppTemplateKey | undefined>(undefined);
+  const [manualFallbackReason, setManualFallbackReason] = useState<string | undefined>();
+  const [automationNotice, setAutomationNotice] = useState<string | null>(null);
+  const [whatsAppFallbacks, setWhatsAppFallbacks] = useState<{ order: Order; templateKey: WhatsAppTemplateKey; reason: string }[]>([]);
+
+  useEffect(() => {
+    if (selectedOrderForWhatsApp || !whatsAppFallbacks.length) return;
+    const fallback = whatsAppFallbacks[0];
+    setSelectedOrderForWhatsApp(fallback.order);
+    setSelectedWhatsAppTemplateKey(fallback.templateKey);
+    setManualFallbackReason(fallback.reason);
+    setWhatsAppFallbacks((previous) => previous.slice(1));
+  }, [selectedOrderForWhatsApp, whatsAppFallbacks]);
 
   const handleOpenWhatsApp = (order: Order, templateKey?: WhatsAppTemplateKey) => {
+    setManualFallbackReason(undefined);
     setSelectedOrderForWhatsApp(order);
     setSelectedWhatsAppTemplateKey(templateKey);
   };
 
-  const handleWhatsAppSent = (orderId: string, logNote: string) => {
-    handleAddNoteToOrder(orderId, logNote, 'general');
+  const handleWhatsAppSent = async (orderId: string, logNote: string) => {
+    await handleAddNoteToOrder(orderId, logNote, 'general');
+  };
+
+  const changeViewMode = (mode: 'recepcion' | 'taller') => {
+    setViewMode(mode);
+    setActiveTab('dashboard');
+    setMobileMenuOpen(false);
+    try { localStorage.setItem('celmart_view_mode', mode); } catch { /* Preference remains active for this session. */ }
+  };
+
+  const openNewOrder = () => {
+    setReceptionPhoto(null);
+    setExpressReception(false);
+    setIsNewOrderModalOpen(true);
+  };
+
+  const receiveExpress = () => {
+    setReceptionPhoto(null);
+    setExpressReception(true);
+    setIsNewOrderModalOpen(true);
+    // Open the native camera within the button gesture; uploads continue in the wizard.
+    expressCamera.current?.click();
+  };
+
+  const notifyOrderChange = async (order: Order, templateKey: WhatsAppTemplateKey) => {
+    if (!config.whatsappAutoSend || !config.whatsappApiUrl?.trim()) return;
+    const template = config.plantillasWhatsApp[templateKey] || defaultWhatsAppTemplates[templateKey];
+    const message = replaceWhatsAppVariables(template, order, config);
+    setAutomationNotice(`${order.id} · Enviando actualización por WhatsApp…`);
+    const result = await sendAutomatedWhatsApp(order, message, config);
+    if (!result.sentViaApi) {
+      const reason = result.error || 'La API no está disponible. Puedes continuar con WhatsApp manual.';
+      setAutomationNotice(`${order.id} · ${reason}`);
+      // Queue failures so an existing message draft is never replaced in the modal.
+      setWhatsAppFallbacks((previous) => [...previous, { order, templateKey, reason }]);
+      return;
+    }
+    setAutomationNotice(`${order.id} · Solicitud aceptada por la API de WhatsApp.`);
+    try {
+      await handleAddNoteToOrder(order.id, `Solicitud automática de WhatsApp aceptada por la API (${order.estado}). Entrega al teléfono pendiente de confirmación.`, 'general');
+    } catch {
+      setAutomationNotice(`${order.id} · La API aceptó la solicitud, pero no se pudo guardar la nota del envío. No la reenvíes.`);
+    }
   };
 
   // 1. Cargar datos iniciales desde Supabase
-  const fetchData = async () => {
-    setLoading(true);
+  const fetchData = useCallback(async (background = false) => {
+    const version = ++fetchVersion.current;
+    if (!background) setLoading(true);
     try {
-      // Cargar Órdenes
-      const { data: ordenesData } = await supabase
-        .from('ordenes')
-        .select('*')
-        .order('created_at', { ascending: false });
-
-      if (ordenesData) {
-        const mappedOrders: Order[] = ordenesData.map((o: any) => ({
-          id: o.id,
-          prioridadUrgente: o.prioridad_urgente,
-          cliente: {
-            nombre: o.cliente_nombre,
-            telefono: o.cliente_telefono,
-            email: o.cliente_email,
-          },
-          dispositivo: {
-            marca: o.dispositivo_marca,
-            modelo: o.dispositivo_modelo,
-            imei: o.dispositivo_imei,
-            color: o.dispositivo_color,
-            claveBloqueo: o.dispositivo_clave,
-          },
-          estado: o.estado as OrderStatus,
-          tecnico: o.tecnico_nombre
-            ? { nombre: o.tecnico_nombre, iniciales: o.tecnico_iniciales || 'TC' }
-            : null,
-          ingreso: o.ingreso,
-          fallaDeclarada: o.falla_declarada,
-          preDiagnostico: o.pre_diagnostico,
-          observacionesFisicas: o.observaciones_fisicas,
-          checklist: { equipoApagado: o.equipo_apagado, camaras: true, carga: true, wifi: true, botones: true, cristales: true, biometria: true, audio: true, chasis: true },
-          notasTecnicas: [],
-          repuestosAsignados: [],
-          costoManoObra: Number(o.costo_mano_obra),
-          totalEstimado: Number(o.total_estimado),
-          garantiaDias: o.garantia_dias,
-        }));
-        setOrders(mappedOrders);
-      }
-
-      // Cargar Clientes
-      const { data: clientesData } = await supabase.from('clientes').select('*');
+      const [ordersResult, clientsResult, inventoryResult, techsResult, movementsResult] = await Promise.all([
+        supabase.from('ordenes').select('*').order('created_at', { ascending: false }),
+        supabase.from('clientes').select('*'),
+        supabase.from('inventario').select('*'),
+        supabase.from('tecnicos').select('*'),
+        supabase.from('movimientos_inventario').select('*').order('created_at', { ascending: false }),
+      ]);
+      if (version !== fetchVersion.current) return;
+      const failed = [ordersResult, clientsResult, inventoryResult, techsResult, movementsResult].find((result) => result.error);
+      setDataError(failed ? `No se pudieron sincronizar todos los datos: ${failed.error.message}` : null);
+      if (ordersResult.data) setOrders(ordersResult.data.map(mapOrderRow));
+      const clientesData = clientsResult.data;
       if (clientesData) {
         setClients(
           clientesData.map((c: any) => ({
@@ -163,26 +203,13 @@ export default function App() {
       }
 
       // Cargar Inventario
-      const { data: inventarioData } = await supabase.from('inventario').select('*');
+      const inventarioData = inventoryResult.data;
       if (inventarioData) {
-        setInventory(
-          inventarioData.map((i: any) => ({
-            id: i.id,
-            nombre: i.nombre,
-            sku: i.sku,
-            categoria: i.categoria,
-            stockActual: i.stock_actual,
-            stockMinimo: i.stock_minimo,
-            costoCompra: Number(i.costo_compra),
-            precioVenta: Number(i.precio_venta),
-            compatibilidad: i.compatibilidad,
-            ubicacion: i.ubicacion,
-          }))
-        );
+        setInventory(inventarioData.map(mapInventoryRow));
       }
 
       // Cargar Técnicos desde Supabase
-      const { data: tecnicosData } = await supabase.from('tecnicos').select('*');
+      const tecnicosData = techsResult.data;
       if (tecnicosData && tecnicosData.length > 0) {
         const mappedTechs: Technician[] = tecnicosData.map((t: any) => ({
           id: t.id,
@@ -202,7 +229,7 @@ export default function App() {
       }
 
       // Cargar Movimientos de Inventario desde Supabase
-      const { data: movsData } = await supabase.from('movimientos_inventario').select('*').order('created_at', { ascending: false });
+      const movsData = movementsResult.data;
       if (movsData && movsData.length > 0) {
         setMovements(
           movsData.map((m: any) => ({
@@ -215,19 +242,64 @@ export default function App() {
             tiempo: m.tiempo || 'Reciente',
           }))
         );
-      } else {
+      } else if (!movementsResult.error) {
         setMovements([]);
       }
     } catch (err) {
       console.error('Error conectando con Supabase:', err);
+      if (version === fetchVersion.current) setDataError('No se pudo conectar con Supabase. Revisa la conexión y vuelve a sincronizar.');
     } finally {
-      setLoading(false);
+      if (version === fetchVersion.current) setLoading(false);
     }
-  };
+  }, []);
 
   useEffect(() => {
-    fetchData();
-  }, []);
+    if (isAuthenticated) void fetchData();
+    return () => { fetchVersion.current++; };
+  }, [isAuthenticated, fetchData]);
+
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    let active = true;
+    let timer: ReturnType<typeof setTimeout>;
+    const refresh = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => { if (active) void fetchData(true); }, 80);
+    };
+    const channel = supabase.channel('celmart-workshop')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'ordenes' }, refresh)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'inventario' }, refresh)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'movimientos_inventario' }, refresh)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'tecnicos' }, refresh)
+      .subscribe((status: string) => {
+        if (!active) return;
+        if (status === 'SUBSCRIBED') refresh(); // Includes reconnects after a phone sleeps.
+        if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+          setDataError('Se perdió la sincronización en tiempo real. Comprueba la conexión y la configuración de Realtime.');
+        }
+      });
+    window.addEventListener('online', refresh);
+    window.addEventListener('focus', refresh);
+    return () => {
+      active = false;
+      clearTimeout(timer);
+      window.removeEventListener('online', refresh);
+      window.removeEventListener('focus', refresh);
+      void supabase.removeChannel(channel);
+    };
+  }, [isAuthenticated, fetchData]);
+
+  const applySavedOrder = (savedOrder: Order) => {
+    fetchVersion.current++; // Discard older fetches that could hide a just-saved change.
+    setLoading(false);
+    setOrders((previous) => previous.some((order) => order.id === savedOrder.id)
+      ? previous.map((order) => order.id === savedOrder.id ? savedOrder : order)
+      : [savedOrder, ...previous]);
+    // Another mutation may have committed while this HTTP response was in flight.
+    void fetchData(true);
+  };
+
+  const liveDrawerOrder = selectedOrderForDrawer ? orders.find((order) => order.id === selectedOrderForDrawer.id) ?? null : null;
 
   const nextOrderNumber =
     orders.length > 0
@@ -256,44 +328,43 @@ export default function App() {
 
   // Guardar nueva orden en Supabase
   const handleSaveNewOrder = async (newOrder: Order, printNow: boolean) => {
-    const { error } = await supabase.from('ordenes').insert([
-      {
-        id: newOrder.id,
-        prioridad_urgente: newOrder.prioridadUrgente,
-        cliente_nombre: newOrder.cliente.nombre,
-        cliente_telefono: newOrder.cliente.telefono,
-        cliente_email: newOrder.cliente.email,
-        dispositivo_marca: newOrder.dispositivo.marca,
-        dispositivo_modelo: newOrder.dispositivo.modelo,
-        dispositivo_imei: newOrder.dispositivo.imei,
-        dispositivo_color: newOrder.dispositivo.color,
-        dispositivo_clave: newOrder.dispositivo.claveBloqueo,
-        estado: newOrder.estado,
-        tecnico_nombre: newOrder.tecnico?.nombre,
-        tecnico_iniciales: newOrder.tecnico?.iniciales,
-        ingreso: newOrder.ingreso,
-        falla_declarada: newOrder.fallaDeclarada,
-        pre_diagnostico: newOrder.preDiagnostico,
-        observaciones_fisicas: newOrder.observacionesFisicas,
-        equipo_apagado: newOrder.checklist.equipoApagado,
-        costo_mano_obra: newOrder.costoManoObra,
-        total_estimado: newOrder.totalEstimado,
-        garantia_dias: newOrder.garantiaDias,
-      },
-    ]);
-
-    if (!error) {
-      await fetchData();
-      if (printNow) setSelectedOrderForPrint(newOrder);
-    } else {
-      console.error('Error insertando orden:', error);
+    let candidate = newOrder;
+    try {
+      for (let attempt = 0; attempt < 5; attempt++) {
+        const { error } = await supabase.from('ordenes').insert([orderToRow(candidate)]);
+        if (!error) {
+          applySavedOrder(candidate);
+          setDataError(null);
+          if (printNow) setSelectedOrderForPrint(candidate);
+          void notifyOrderChange(candidate, 'ingreso');
+          return true;
+        }
+        // Two receptions may propose the same folio. Retry against the latest rows.
+        if (error.code !== '23505') throw new Error(error.message);
+        candidate = { ...newOrder, id: `OS-${await getNextOrderNumber()}` };
+      }
+      throw new Error('No se pudo reservar el folio. Intenta guardar de nuevo.');
+    } catch (error) {
+      setDataError(`No se guardó la orden: ${error instanceof Error ? error.message : 'error de conexión'}`);
+      return false;
     }
   };
 
   // Actualizar estado de orden en Supabase
   const handleUpdateOrderStatus = async (orderId: string, newStatus: OrderStatus) => {
-    setOrders((prev) => prev.map((o) => (o.id === orderId ? { ...o, estado: newStatus } : o)));
-    await supabase.from('ordenes').update({ estado: newStatus }).eq('id', orderId);
+    const previous = orders.find((order) => order.id === orderId);
+    if (!previous) throw new Error('La orden no está disponible. Vuelve a sincronizar.');
+    if (previous.estado === newStatus) return;
+    const { data, error } = await supabase.from('ordenes').update({ estado: newStatus })
+      .eq('id', orderId).eq('estado', previous.estado).select('*').maybeSingle();
+    if (error) throw new Error(error.message);
+    if (!data) {
+      void fetchData(true);
+      throw new Error('Otra persona cambió esta orden. Revisa su estado actualizado antes de continuar.');
+    }
+    const saved = mapOrderRow(data);
+    applySavedOrder(saved);
+    void notifyOrderChange(saved, determineTemplateKeyForStatus(newStatus));
   };
 
   // Eliminar orden definitivamente de la base de datos
@@ -323,7 +394,7 @@ export default function App() {
     const randomColor = colors[Math.floor(Math.random() * colors.length)];
 
     const newTech: Technician = {
-      id: `tech-${Date.now()}`,
+      id: crypto.randomUUID(),
       ...newTechData,
       iniciales: initials,
       ordenesActivas: 0,
@@ -422,33 +493,33 @@ export default function App() {
     await supabase.from('tecnicos').update({ especialidad: newSpecialty }).eq('id', techId);
   };
 
-  const handleAddNoteToOrder = (orderId: string, content: string, tipo: TechNote['tipo'] = 'diagnostico') => {
+  const handleAddNoteToOrder = async (orderId: string, content: string, tipo: TechNote['tipo'] = 'diagnostico') => {
+    if (!content.trim()) return;
     const now = new Date();
-    const formattedDate = `${now.getDate()} Ago ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
-    const newNote: TechNote = { id: `note-${Date.now()}`, autor: 'Técnico', fecha: formattedDate, contenido: content, tipo };
-    setOrders((prev) =>
-      prev.map((o) => (o.id === orderId ? { ...o, notasTecnicas: [newNote, ...o.notasTecnicas] } : o))
-    );
+    const formattedDate = now.toLocaleString('es-MX', { dateStyle: 'medium', timeStyle: 'short' });
+    const newNote: TechNote = { id: `note-${crypto.randomUUID()}`, autor: 'Técnico', fecha: formattedDate, contenido: content.trim(), tipo };
+    const saved = await updateOrderWithRetry(orderId, ['notas_tecnicas'], (current) => ({
+      notas_tecnicas: [newNote, ...current.notasTecnicas],
+    }));
+    applySavedOrder(saved);
   };
 
   const handleAssignPartToOrder = async (orderId: string, part: AssignedPart) => {
-    setOrders((prev) =>
-      prev.map((o) => {
-        if (o.id === orderId) {
-          const updatedParts = [...o.repuestosAsignados, part];
-          return {
-            ...o,
-            repuestosAsignados: updatedParts,
-            totalEstimado: o.costoManoObra + updatedParts.reduce((s, p) => s + p.precioUnitario * p.cantidad, 0),
-          };
-        }
-        return o;
-      })
-    );
+    if (!Number.isFinite(part.cantidad) || part.cantidad <= 0 || !Number.isFinite(part.precioUnitario) || part.precioUnitario < 0) {
+      throw new Error('La cantidad y el precio del repuesto no son válidos.');
+    }
+    const saved = await updateOrderWithRetry(orderId, ['repuestos_asignados', 'costo_mano_obra', 'total_estimado'], (current) => {
+      const parts = [...current.repuestosAsignados, part];
+      return {
+        repuestos_asignados: parts,
+        total_estimado: current.costoManoObra + parts.reduce((sum, item) => sum + item.precioUnitario * item.cantidad, 0),
+      };
+    });
+    applySavedOrder(saved);
 
     // Registrar movimiento real
     const newMovement: InventoryMovement = {
-      id: `mov-${Date.now()}`,
+      id: `mov-${crypto.randomUUID()}`,
       repuestoNombre: part.nombre,
       codigoOrden: orderId,
       tipo: 'consumo',
@@ -456,9 +527,7 @@ export default function App() {
       autor: 'Taller',
       tiempo: 'Ahora',
     };
-    setMovements((prev) => [newMovement, ...prev]);
-
-    await supabase.from('movimientos_inventario').insert([
+    const { error: movementError } = await supabase.from('movimientos_inventario').insert([
       {
         id: newMovement.id,
         repuesto_nombre: newMovement.repuestoNombre,
@@ -469,6 +538,18 @@ export default function App() {
         tiempo: newMovement.tiempo,
       },
     ]);
+    if (movementError) {
+      setDataError(`El repuesto se guardó, pero no su movimiento de inventario: ${movementError.message}`);
+    } else {
+      setMovements((prev) => [newMovement, ...prev.filter((movement) => movement.id !== newMovement.id)]);
+    }
+  };
+
+  const handleAddPhotoToOrder = async (orderId: string, photoUrl: string) => {
+    const saved = await updateOrderWithRetry(orderId, ['fotos_evidencia'], (current) => ({
+      fotos_evidencia: [...new Set([...(current.fotosEvidencia ?? []), photoUrl])],
+    }));
+    applySavedOrder(saved);
   };
 
   const handleUpdateInventoryStock = async (itemId: string, delta: number) => {
@@ -502,7 +583,7 @@ export default function App() {
   };
 
   const handleAddInventoryItem = async (newItem: Omit<InventoryItem, 'id'>) => {
-    const { error } = await supabase.from('inventario').insert([
+    const { data, error } = await supabase.from('inventario').insert([
       {
         nombre: newItem.nombre,
         sku: newItem.sku,
@@ -513,19 +594,36 @@ export default function App() {
         precio_venta: newItem.precioVenta,
         compatibilidad: newItem.compatibilidad,
         ubicacion: newItem.ubicacion,
+        imagen_url: newItem.imagenUrl ?? null,
       },
-    ]);
-    if (!error) fetchData();
+    ]).select('*').single();
+    if (error || !data) throw new Error(error?.message ?? 'No se pudo crear el repuesto.');
+    const saved = mapInventoryRow(data);
+    fetchVersion.current++;
+    setInventory((previous) => [saved, ...previous.filter((item) => item.id !== saved.id)]);
+    void fetchData(true);
+    return saved;
   };
 
   const handleEditInventoryItem = async (updatedItem: InventoryItem) => {
-    setInventory((prev) => prev.map((item) => (item.id === updatedItem.id ? updatedItem : item)));
-    await supabase.from('inventario').update({
+    const { data, error } = await supabase.from('inventario').update({
       nombre: updatedItem.nombre,
       sku: updatedItem.sku,
+      categoria: updatedItem.categoria,
       stock_actual: updatedItem.stockActual,
+      stock_minimo: updatedItem.stockMinimo,
+      costo_compra: updatedItem.costoCompra,
       precio_venta: updatedItem.precioVenta,
-    }).eq('id', updatedItem.id);
+      compatibilidad: updatedItem.compatibilidad,
+      ubicacion: updatedItem.ubicacion,
+      imagen_url: updatedItem.imagenUrl ?? null,
+    }).eq('id', updatedItem.id).select('*').maybeSingle();
+    if (error || !data) throw new Error(error?.message ?? 'El repuesto no existe o no tienes permiso para actualizarlo.');
+    const saved = mapInventoryRow(data);
+    fetchVersion.current++;
+    setInventory((previous) => previous.map((item) => item.id === saved.id ? saved : item));
+    void fetchData(true);
+    return saved;
   };
 
   const handleDeleteInventoryItem = async (itemId: string) => {
@@ -547,12 +645,12 @@ export default function App() {
   };
 
   const handleSaveConfig = async (updated: WorkshopConfig) => {
-    setConfig(updated);
     try {
       localStorage.setItem('celmart_workshop_config', JSON.stringify(updated));
     } catch (err) {
-      console.warn('Error guardando configuración en localStorage:', err);
+      throw new Error('No se pudo guardar la configuración en este navegador. Revisa el espacio disponible e inténtalo de nuevo.');
     }
+    setConfig(updated);
   };
 
   // Calcular carga activa real de cada técnico según órdenes no finalizadas
@@ -571,7 +669,7 @@ export default function App() {
   }
 
   return (
-    <div className="flex h-screen w-full bg-[#0c0c0e] text-zinc-100 overflow-hidden font-sans select-text">
+    <div className="flex h-dvh w-full bg-[#0c0c0e] text-zinc-100 overflow-hidden font-sans select-text">
       <Sidebar
         activeTab={activeTab}
         setActiveTab={(tab) => {
@@ -590,13 +688,41 @@ export default function App() {
         <Header
           globalSearch={globalSearch}
           setGlobalSearch={setGlobalSearch}
-          onOpenNewOrder={() => setIsNewOrderModalOpen(true)}
+          onOpenNewOrder={openNewOrder}
+          viewMode={viewMode}
+          onViewModeChange={changeViewMode}
           urgentOrdersCount={urgentOrdersCount}
           onLogout={() => setIsAuthenticated(false)}
           onToggleMobileMenu={() => setMobileMenuOpen(!mobileMenuOpen)}
         />
-        <main className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-6">
-          {activeTab === 'dashboard' && (
+        <main className={`flex-1 overflow-y-auto min-h-0 ${viewMode === 'taller' && activeTab === 'dashboard' ? 'p-0' : 'p-4 sm:p-6'} space-y-4`}>
+          {automationNotice && (
+            <div role="status" className="rounded-lg border border-emerald-900/60 bg-emerald-950/25 p-3 text-sm text-emerald-200 flex items-center justify-between gap-3">
+              <span>{automationNotice}</span>
+              <button type="button" onClick={() => setAutomationNotice(null)} aria-label="Cerrar aviso de WhatsApp" className="min-w-11 min-h-11">✕</button>
+            </div>
+          )}
+          {dataError && (
+            <div role="alert" className="rounded-lg border border-amber-700/50 bg-amber-950/30 p-3 text-sm text-amber-200 flex flex-wrap items-center justify-between gap-3">
+              <span>{dataError}</span>
+              <button type="button" onClick={() => void fetchData(true)} className="underline underline-offset-4">Volver a sincronizar</button>
+            </div>
+          )}
+          {loading && <p role="status" className="text-sm text-zinc-400">Cargando datos del taller…</p>}
+          {activeTab === 'dashboard' && viewMode === 'taller' && (
+            <MobileWorkshopView
+              orders={orders}
+              searchQuery={globalSearch}
+              onSearchChange={setGlobalSearch}
+              onReceiveExpress={receiveExpress}
+              onSelectOrder={setSelectedOrderForDrawer}
+              onUpdateStatus={handleUpdateOrderStatus}
+              onAddPhoto={handleAddPhotoToOrder}
+              onAddNote={handleAddNoteToOrder}
+              onOpenWhatsApp={handleOpenWhatsApp}
+            />
+          )}
+          {activeTab === 'dashboard' && viewMode === 'recepcion' && (
             <div className="space-y-6 animate-in fade-in duration-150">
               <MetricCards orders={orders} onSelectFilter={(st) => setTableStatusFilter(st)} />
               <div className="grid grid-cols-1 lg:grid-cols-3 xl:grid-cols-4 gap-6">
@@ -608,7 +734,7 @@ export default function App() {
                     onSelectOrder={(order) => setSelectedOrderForDrawer(order)}
                     onPrintTicket={(order) => setSelectedOrderForPrint(order)}
                     onOpenWhatsApp={handleOpenWhatsApp}
-                    onUpdateOrderStatus={handleUpdateOrderStatus}
+                    onUpdateOrderStatus={(orderId, status) => { void handleUpdateOrderStatus(orderId, status).catch((error: Error) => setDataError(error.message)); }}
                     onDeleteOrder={handleDeleteOrder}
                   />
                 </div>
@@ -667,19 +793,37 @@ export default function App() {
 
       <NewOrderWizardModal
         isOpen={isNewOrderModalOpen}
-        onClose={() => setIsNewOrderModalOpen(false)}
+        onClose={() => { setIsNewOrderModalOpen(false); setReceptionPhoto(null); }}
+        initialPhoto={receptionPhoto}
+        expressReception={expressReception}
         onSaveOrder={handleSaveNewOrder}
         existingClients={clients}
         technicians={techniciansWithRealLoad}
         nextOrderNumber={nextOrderNumber}
       />
+      <input
+        ref={expressCamera}
+        type="file"
+        accept="image/*"
+        capture="environment"
+        aria-label="Cámara para recepción exprés"
+        className="hidden"
+        onChange={(event) => {
+          const file = event.target.files?.[0];
+          event.target.value = '';
+          if (file) setReceptionPhoto(file);
+        }}
+      />
       <DeviceDetailDrawer
-        order={selectedOrderForDrawer}
-        isOpen={!!selectedOrderForDrawer}
+        key={selectedOrderForDrawer?.id ?? 'closed'}
+        order={liveDrawerOrder}
+        isOpen={!!liveDrawerOrder}
         onClose={() => setSelectedOrderForDrawer(null)}
         onUpdateStatus={handleUpdateOrderStatus}
+        autoWhatsApp={Boolean(config.whatsappAutoSend && config.whatsappApiUrl?.trim())}
         onAddNote={handleAddNoteToOrder}
         onAssignPart={handleAssignPartToOrder}
+        onAddPhoto={handleAddPhotoToOrder}
         onPrintTicket={(order) => setSelectedOrderForPrint(order)}
         onOpenWhatsApp={handleOpenWhatsApp}
         inventory={inventory}
@@ -699,6 +843,7 @@ export default function App() {
         }}
         config={config}
         initialTemplateKey={selectedWhatsAppTemplateKey}
+        manualFallbackReason={manualFallbackReason}
         onSentWhatsApp={handleWhatsAppSent}
       />
     </div>

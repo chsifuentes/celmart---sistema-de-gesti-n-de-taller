@@ -1,26 +1,116 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { 
   Search, 
   Plus, 
   Minus, 
   PackagePlus, 
   AlertTriangle, 
-  CheckCircle, 
-  Tag, 
   X, 
   Pencil, 
   Trash2, 
   Barcode, 
-  Check, 
-  Inbox
+  Inbox,
+  Camera,
+  ImagePlus,
+  LoaderCircle,
+  ImageOff
 } from 'lucide-react';
 import { InventoryItem } from '../types';
+import { uploadWorkshopPhoto } from '../lib/imageStorage';
+
+function InventoryThumbnail({ url, name, large = false }: { url?: string; name: string; large?: boolean }) {
+  const [failedUrl, setFailedUrl] = useState<string | undefined>();
+  return (
+    <div className={`${large ? 'h-24 w-24' : 'h-11 w-11'} shrink-0 overflow-hidden rounded-lg border border-zinc-700/60 bg-[#111114] flex items-center justify-center`}>
+      {url && url !== failedUrl ? (
+        <img src={url} alt={`Imagen de ${name || 'repuesto'}`} loading="lazy" referrerPolicy="no-referrer" className="h-full w-full object-contain" onError={() => setFailedUrl(url)} />
+      ) : (
+        <ImageOff className={`${large ? 'h-7 w-7' : 'h-4 w-4'} text-zinc-600`} aria-label="Sin imagen disponible" />
+      )}
+    </div>
+  );
+}
+
+interface InventoryImageFieldProps {
+  value: string;
+  onChange: (url: string) => void;
+  sku: string;
+  name: string;
+  disabled: boolean;
+  onBusyChange: (busy: boolean) => void;
+}
+
+function InventoryImageField({ value, onChange, sku, name, disabled, onBusyChange }: InventoryImageFieldProps) {
+  const [uploading, setUploading] = useState(false);
+  const [error, setError] = useState('');
+  const uploadInProgress = useRef(false);
+  const cameraInput = useRef<HTMLInputElement>(null);
+  const fileInput = useRef<HTMLInputElement>(null);
+  const busy = uploading || disabled;
+
+  const uploadPhoto = async (file: File) => {
+    if (uploadInProgress.current || disabled) return;
+    uploadInProgress.current = true;
+    setUploading(true);
+    onBusyChange(true);
+    setError('');
+    try {
+      const url = await uploadWorkshopPhoto(file, 'inventario', sku.trim() || 'repuesto');
+      if (!url) throw new Error('No se pudo subir la imagen. Revisa la conexión e inténtalo de nuevo.');
+      onChange(url);
+    } catch (uploadError) {
+      setError(uploadError instanceof Error ? uploadError.message : 'No se pudo guardar la imagen.');
+    } finally {
+      uploadInProgress.current = false;
+      setUploading(false);
+      onBusyChange(false);
+    }
+  };
+
+  const handleFile = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file: File | undefined = event.target.files?.[0];
+    event.target.value = '';
+    if (file) void uploadPhoto(file);
+  };
+
+  const handlePaste = (event: React.ClipboardEvent<HTMLElement>) => {
+    const imageItem = Array.from<DataTransferItem>(event.clipboardData.items).find((item) => item.kind === 'file' && item.type.startsWith('image/'));
+    const file = imageItem?.getAsFile();
+    if (!file) return;
+    event.preventDefault();
+    if (!busy) void uploadPhoto(file);
+  };
+
+  return (
+    <section onPaste={handlePaste} tabIndex={0} aria-label="Imagen del repuesto; puedes pegar una imagen con el teclado" className="rounded-lg border border-zinc-700/60 bg-[#111114] p-3 space-y-3 focus:outline-none focus:ring-1 focus:ring-zinc-500">
+      <div className="flex items-start gap-3 min-w-0">
+        <InventoryThumbnail url={value} name={name} large />
+        <div className="flex-1 min-w-0 space-y-2">
+          <label className="block text-zinc-400 font-mono text-[11px]">
+            IMAGEN DEL REPUESTO
+            <input type="url" value={value} disabled={busy} onChange={(event) => { onChange(event.target.value); setError(''); }} placeholder="Pega una URL https://…" aria-label="URL de la imagen del repuesto" className="mt-1 w-full min-w-0 bg-[#1c1c20] text-zinc-100 px-2.5 py-2 rounded-lg border border-zinc-700/60 focus:border-zinc-500 focus:outline-none text-xs disabled:opacity-50" />
+          </label>
+          <p className="text-[11px] text-zinc-500 leading-relaxed">Pega una URL o una imagen con Ctrl+V. Las fotos y archivos se comprimen a WebP.</p>
+          {value && <button type="button" disabled={busy} onClick={() => { onChange(''); setError(''); }} className="text-[11px] text-rose-300 hover:text-rose-200 underline underline-offset-2 disabled:opacity-40">Quitar imagen</button>}
+        </div>
+      </div>
+      <div className="flex flex-wrap gap-2">
+        <input ref={cameraInput} type="file" accept="image/*" capture="environment" onChange={handleFile} disabled={busy} aria-label="Tomar foto del repuesto" className="hidden" />
+        <input ref={fileInput} type="file" accept="image/*" onChange={handleFile} disabled={busy} aria-label="Subir imagen del repuesto" className="hidden" />
+        <button type="button" disabled={busy} onClick={() => cameraInput.current?.click()} className="flex items-center justify-center gap-2 min-h-11 px-3 py-2 rounded-lg border border-zinc-700 bg-zinc-800 hover:bg-zinc-700 text-zinc-100 disabled:opacity-40"><Camera className="h-4 w-4" /> Tomar foto</button>
+        <button type="button" disabled={busy} onClick={() => fileInput.current?.click()} className="flex items-center justify-center gap-2 min-h-11 px-3 py-2 rounded-lg border border-zinc-700 bg-zinc-800 hover:bg-zinc-700 text-zinc-100 disabled:opacity-40"><ImagePlus className="h-4 w-4" /> Subir archivo</button>
+      </div>
+      {uploading && <p role="status" className="text-emerald-300 flex items-center gap-2"><LoaderCircle className="h-4 w-4 animate-spin" /> Comprimiendo y subiendo imagen…</p>}
+      {error && <p role="alert" className="text-rose-300">{error}</p>}
+    </section>
+  );
+}
 
 interface InventoryViewProps {
   inventory: InventoryItem[];
   onUpdateStock: (itemId: string, delta: number) => void;
-  onAddInventoryItem: (newItem: Omit<InventoryItem, 'id'>) => void;
-  onEditInventoryItem: (updatedItem: InventoryItem) => void;
+  onAddInventoryItem: (newItem: Omit<InventoryItem, 'id'>) => Promise<void | InventoryItem> | void;
+  onEditInventoryItem: (updatedItem: InventoryItem) => Promise<void | InventoryItem> | void;
   onDeleteInventoryItem: (itemId: string) => void;
 }
 
@@ -47,6 +137,9 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
   const [precioVenta, setPrecioVenta] = useState(1200);
   const [compatibilidad, setCompatibilidad] = useState('');
   const [ubicacion, setUbicacion] = useState('Cajón A-01');
+  const [imagenUrl, setImagenUrl] = useState('');
+  const [addPhotoBusy, setAddPhotoBusy] = useState(false);
+  const [addError, setAddError] = useState('');
 
   // Edit item form state
   const [editNombre, setEditNombre] = useState('');
@@ -58,6 +151,11 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
   const [editPrecioVenta, setEditPrecioVenta] = useState(0);
   const [editCompatibilidad, setEditCompatibilidad] = useState('');
   const [editUbicacion, setEditUbicacion] = useState('');
+  const [editImagenUrl, setEditImagenUrl] = useState('');
+  const [editPhotoBusy, setEditPhotoBusy] = useState(false);
+  const [editError, setEditError] = useState('');
+  const [savingForm, setSavingForm] = useState<'add' | 'edit' | null>(null);
+  const saveInProgress = useRef(false);
 
   const categories = [
     'Todas',
@@ -95,26 +193,38 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
     setEditPrecioVenta(item.precioVenta);
     setEditCompatibilidad(item.compatibilidad);
     setEditUbicacion(item.ubicacion);
+    setEditImagenUrl(item.imagenUrl || '');
+    setEditError('');
   };
 
-  const handleSaveEdit = (e: React.FormEvent) => {
+  const handleSaveEdit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!itemToEdit || !editNombre.trim() || !editSku.trim()) return;
+    if (!itemToEdit || !editNombre.trim() || !editSku.trim() || editPhotoBusy || saveInProgress.current) return;
+    saveInProgress.current = true;
+    setSavingForm('edit');
+    setEditError('');
 
-    onEditInventoryItem({
-      id: itemToEdit.id,
-      nombre: editNombre.trim(),
-      sku: editSku.trim().toUpperCase(),
-      categoria: editCategoria,
-      stockActual: Number(editStockActual),
-      stockMinimo: Number(editStockMinimo),
-      costoCompra: Number(editCostoCompra),
-      precioVenta: Number(editPrecioVenta),
-      compatibilidad: editCompatibilidad.trim() || 'General',
-      ubicacion: editUbicacion.trim() || 'Almacén',
-    });
-
-    setItemToEdit(null);
+    try {
+      await onEditInventoryItem({
+        id: itemToEdit.id,
+        nombre: editNombre.trim(),
+        sku: editSku.trim().toUpperCase(),
+        categoria: editCategoria,
+        stockActual: Number(editStockActual),
+        stockMinimo: Number(editStockMinimo),
+        costoCompra: Number(editCostoCompra),
+        precioVenta: Number(editPrecioVenta),
+        compatibilidad: editCompatibilidad.trim() || 'General',
+        ubicacion: editUbicacion.trim() || 'Almacén',
+        imagenUrl: editImagenUrl.trim() || undefined,
+      });
+      setItemToEdit(null);
+    } catch (error) {
+      setEditError(error instanceof Error ? error.message : 'No se pudo actualizar el repuesto. Revisa la conexión e inténtalo de nuevo.');
+    } finally {
+      saveInProgress.current = false;
+      setSavingForm(null);
+    }
   };
 
   const handleConfirmDelete = () => {
@@ -124,35 +234,47 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
     }
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!nombre.trim() || !sku.trim()) return;
+    if (!nombre.trim() || !sku.trim() || addPhotoBusy || saveInProgress.current) return;
+    saveInProgress.current = true;
+    setSavingForm('add');
+    setAddError('');
 
-    onAddInventoryItem({
-      nombre: nombre.trim(),
-      sku: sku.trim().toUpperCase(),
-      categoria,
-      stockActual: Number(stockActual),
-      stockMinimo: Number(stockMinimo),
-      costoCompra: Number(costoCompra),
-      precioVenta: Number(precioVenta),
-      compatibilidad: compatibilidad.trim() || 'General',
-      ubicacion: ubicacion.trim() || 'Almacén',
-    });
+    try {
+      await onAddInventoryItem({
+        nombre: nombre.trim(),
+        sku: sku.trim().toUpperCase(),
+        categoria,
+        stockActual: Number(stockActual),
+        stockMinimo: Number(stockMinimo),
+        costoCompra: Number(costoCompra),
+        precioVenta: Number(precioVenta),
+        compatibilidad: compatibilidad.trim() || 'General',
+        ubicacion: ubicacion.trim() || 'Almacén',
+        imagenUrl: imagenUrl.trim() || undefined,
+      });
 
-    // Reset & close
-    setNombre('');
-    setSku('');
-    setCompatibilidad('');
-    setIsAddModalOpen(false);
+      // Clear only after persistence succeeds, preserving drafts on connection errors.
+      setNombre('');
+      setSku('');
+      setCompatibilidad('');
+      setImagenUrl('');
+      setIsAddModalOpen(false);
+    } catch (error) {
+      setAddError(error instanceof Error ? error.message : 'No se pudo guardar el repuesto. Revisa la conexión e inténtalo de nuevo.');
+    } finally {
+      saveInProgress.current = false;
+      setSavingForm(null);
+    }
   };
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 min-w-0">
       {/* Top Header & Overview */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-3">
             <h1 className="text-xl font-bold text-zinc-100 tracking-tight">
               Control de Inventario y Repuestos
             </h1>
@@ -167,7 +289,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
 
         <button
           id="btn-add-inventory-modal"
-          onClick={() => setIsAddModalOpen(true)}
+          onClick={() => { setAddError(''); setIsAddModalOpen(true); }}
           className="flex items-center gap-2 bg-zinc-100 hover:bg-white text-zinc-900 px-3.5 py-2 rounded-lg font-semibold text-xs shadow-sm transition-all shrink-0 self-start sm:self-auto"
         >
           <PackagePlus className="w-4 h-4" />
@@ -178,7 +300,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
       {/* Filter and Search Bar with Barcode Scanner Indicator */}
       <div className="bg-[#161619] border border-zinc-800/80 rounded-lg p-3.5 flex flex-col md:flex-row md:items-center justify-between gap-3 shadow-sm">
         {/* Category Tabs */}
-        <div className="flex items-center gap-1.5 overflow-x-auto pb-1 md:pb-0 no-scrollbar">
+        <div className="flex items-center gap-1.5 min-w-0 flex-1 overflow-x-auto pb-1 md:pb-0 no-scrollbar">
           {categories.map((cat) => {
             const isSelected = selectedCategory === cat;
             return (
@@ -198,8 +320,8 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
         </div>
 
         {/* Search with Barcode Scanner Support */}
-        <div className="flex items-center gap-2 w-full md:w-auto">
-          <div className="relative flex-1 md:w-80">
+        <div className="flex items-center gap-2 w-full md:w-72 md:shrink-0">
+          <div className="relative flex-1 min-w-0">
             <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400" />
             <input
               type="text"
@@ -272,15 +394,18 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                     >
                       {/* Repuesto / SKU / Código de barras */}
                       <td className="py-3 px-4">
-                        <div className="flex flex-col">
-                          <span className="font-semibold text-zinc-100 group-hover:text-white">
-                            {item.nombre}
-                          </span>
-                          <div className="flex items-center gap-2 mt-0.5">
-                            <span className="text-[11px] font-mono text-zinc-400 flex items-center gap-1">
-                              <Barcode className="w-3 h-3 text-zinc-500 inline" />
-                              SKU: {item.sku}
+                        <div className="flex items-center gap-3">
+                          <InventoryThumbnail url={item.imagenUrl} name={item.nombre} />
+                          <div className="flex flex-col">
+                            <span className="font-semibold text-zinc-100 group-hover:text-white">
+                              {item.nombre}
                             </span>
+                            <div className="flex items-center gap-2 mt-0.5">
+                              <span className="text-[11px] font-mono text-zinc-400 flex items-center gap-1">
+                                <Barcode className="w-3 h-3 text-zinc-500 inline" />
+                                SKU: {item.sku}
+                              </span>
+                            </div>
                           </div>
                         </div>
                       </td>
@@ -388,22 +513,25 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
       {/* Modal: + Nuevo Repuesto */}
       {isAddModalOpen && (
         <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-[#161619] border border-zinc-700/80 rounded-lg w-full max-w-lg shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-150">
-            <div className="p-4 border-b border-zinc-800 flex items-center justify-between">
+          <div role="dialog" aria-modal="true" aria-label="Registrar refacción o repuesto" className="bg-[#161619] border border-zinc-700/80 rounded-lg w-full max-w-lg max-h-[90dvh] flex flex-col shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+            <div className="p-4 border-b border-zinc-800 flex items-center justify-between shrink-0 gap-3">
               <div className="flex items-center gap-2">
                 <PackagePlus className="w-4 h-4 text-zinc-300" />
                 <h3 className="text-sm font-semibold text-zinc-100">Registrar Refacción / Repuesto</h3>
               </div>
               <button
                 onClick={() => setIsAddModalOpen(false)}
-                className="text-zinc-400 hover:text-zinc-200 p-1"
+                disabled={addPhotoBusy || savingForm !== null}
+                aria-label="Cerrar registro de repuesto"
+                className="text-zinc-400 hover:text-zinc-200 p-1 disabled:opacity-40"
               >
                 <X className="w-4 h-4" />
               </button>
             </div>
 
-            <form onSubmit={handleSubmit} className="p-5 space-y-4 text-xs">
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <form onSubmit={handleSubmit} className="p-5 space-y-4 text-xs overflow-y-auto min-h-0">
+              <InventoryImageField value={imagenUrl} onChange={setImagenUrl} sku={sku} name={nombre} disabled={savingForm !== null} onBusyChange={setAddPhotoBusy} />
+              <fieldset disabled={savingForm !== null} className="grid grid-cols-1 sm:grid-cols-2 gap-3 min-w-0 disabled:opacity-60">
                 <div className="sm:col-span-2">
                   <label className="block text-zinc-400 font-mono text-[11px] mb-1">
                     DESCRIPCIÓN DEL REPUESTO *
@@ -526,21 +654,25 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                     className="w-full bg-[#1c1c20] text-zinc-100 px-3 py-2 rounded-lg border border-zinc-700/60 focus:border-zinc-500 focus:outline-none"
                   />
                 </div>
-              </div>
+              </fieldset>
 
+              {addError && <p role="alert" className="text-rose-300">{addError}</p>}
               <div className="pt-3 border-t border-zinc-800 flex justify-end gap-2">
                 <button
                   type="button"
                   onClick={() => setIsAddModalOpen(false)}
-                  className="px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 transition-colors"
+                  disabled={addPhotoBusy || savingForm !== null}
+                  className="px-3 py-1.5 min-h-11 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 transition-colors disabled:opacity-40"
                 >
                   Cancelar
                 </button>
                 <button
                   type="submit"
-                  className="px-4 py-1.5 rounded-lg bg-zinc-100 hover:bg-white text-zinc-900 font-semibold transition-colors"
+                  disabled={addPhotoBusy || savingForm !== null}
+                  className="px-4 py-1.5 min-h-11 rounded-lg bg-zinc-100 hover:bg-white text-zinc-900 font-semibold transition-colors disabled:opacity-40 flex items-center justify-center gap-2"
                 >
-                  Guardar Refacción
+                  {savingForm === 'add' && <LoaderCircle className="w-4 h-4 animate-spin" />}
+                  {savingForm === 'add' ? 'Guardando…' : 'Guardar Refacción'}
                 </button>
               </div>
             </form>
@@ -551,22 +683,25 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
       {/* Modal: Editar Repuesto */}
       {itemToEdit && (
         <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-[#161619] border border-zinc-700/80 rounded-lg w-full max-w-lg shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-150">
-            <div className="p-4 border-b border-zinc-800 flex items-center justify-between">
+          <div role="dialog" aria-modal="true" aria-label={`Editar repuesto ${itemToEdit.sku}`} className="bg-[#161619] border border-zinc-700/80 rounded-lg w-full max-w-lg max-h-[90dvh] flex flex-col shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+            <div className="p-4 border-b border-zinc-800 flex items-center justify-between shrink-0 gap-3">
               <div className="flex items-center gap-2">
                 <Pencil className="w-4 h-4 text-zinc-300" />
                 <h3 className="text-sm font-semibold text-zinc-100">Editar Refacción ({itemToEdit.sku})</h3>
               </div>
               <button
                 onClick={() => setItemToEdit(null)}
-                className="text-zinc-400 hover:text-zinc-200 p-1"
+                disabled={editPhotoBusy || savingForm !== null}
+                aria-label="Cerrar edición de repuesto"
+                className="text-zinc-400 hover:text-zinc-200 p-1 disabled:opacity-40"
               >
                 <X className="w-4 h-4" />
               </button>
             </div>
 
-            <form onSubmit={handleSaveEdit} className="p-5 space-y-4 text-xs">
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <form onSubmit={handleSaveEdit} className="p-5 space-y-4 text-xs overflow-y-auto min-h-0">
+              <InventoryImageField key={itemToEdit.id} value={editImagenUrl} onChange={setEditImagenUrl} sku={editSku} name={editNombre} disabled={savingForm !== null} onBusyChange={setEditPhotoBusy} />
+              <fieldset disabled={savingForm !== null} className="grid grid-cols-1 sm:grid-cols-2 gap-3 min-w-0 disabled:opacity-60">
                 <div className="sm:col-span-2">
                   <label className="block text-zinc-400 font-mono text-[11px] mb-1">
                     DESCRIPCIÓN DEL REPUESTO *
@@ -685,21 +820,25 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                     className="w-full bg-[#1c1c20] text-zinc-100 px-3 py-2 rounded-lg border border-zinc-700/60 focus:border-zinc-500 focus:outline-none"
                   />
                 </div>
-              </div>
+              </fieldset>
 
+              {editError && <p role="alert" className="text-rose-300">{editError}</p>}
               <div className="pt-3 border-t border-zinc-800 flex justify-end gap-2">
                 <button
                   type="button"
                   onClick={() => setItemToEdit(null)}
-                  className="px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 transition-colors"
+                  disabled={editPhotoBusy || savingForm !== null}
+                  className="px-3 py-1.5 min-h-11 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 transition-colors disabled:opacity-40"
                 >
                   Cancelar
                 </button>
                 <button
                   type="submit"
-                  className="px-4 py-1.5 rounded-lg bg-zinc-100 hover:bg-white text-zinc-900 font-semibold transition-colors"
+                  disabled={editPhotoBusy || savingForm !== null}
+                  className="px-4 py-1.5 min-h-11 rounded-lg bg-zinc-100 hover:bg-white text-zinc-900 font-semibold transition-colors disabled:opacity-40 flex items-center justify-center gap-2"
                 >
-                  Actualizar Refacción
+                  {savingForm === 'edit' && <LoaderCircle className="w-4 h-4 animate-spin" />}
+                  {savingForm === 'edit' ? 'Guardando…' : 'Actualizar Refacción'}
                 </button>
               </div>
             </form>
