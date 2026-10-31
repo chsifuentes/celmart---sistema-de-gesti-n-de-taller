@@ -469,33 +469,73 @@ export function createMockSupabaseClient() {
       return channel.unsubscribe();
     },
     auth: {
-      signInWithPassword: async ({ email, password }: { email: string; password?: string }) => {
-        // Accept any demo login or credentials
-        return {
-          data: {
-            session: {
-              access_token: 'mock-token',
-              user: { id: 'mock-user-1', email: email || 'admin@celmart.mx' },
-            },
-          },
-          error: null,
-        };
+      signInWithPassword: async ({ email }: { email: string; password?: string }) => {
+        const session={access_token:'mock-token',user:{id:'mock-user-1',email:email||'admin@celmart.mx'}};
+        try { localStorage.setItem('celmart_mock_session',JSON.stringify(session)); } catch { /* Demo memory only. */ }
+        return {data:{session},error:null};
       },
-      signOut: async () => ({ error: null }),
-      getSession: async () => ({
-        data: {
-          session: {
-            access_token: 'mock-token',
-            user: { id: 'mock-user-1', email: 'admin@celmart.mx' },
-          },
-        },
-        error: null,
-      }),
+      signOut: async () => { try { localStorage.removeItem('celmart_mock_session'); } catch { /* No browser storage. */ } return {error:null}; },
+      getSession: async () => {
+        let session=null;
+        try { session=JSON.parse(localStorage.getItem('celmart_mock_session')||'null'); } catch { /* No previous demo login. */ }
+        return {data:{session},error:null};
+      },
     },
     from(tableName: string) {
       return createQueryBuilder(tableName);
     },
     async rpc(name: string, args: Record<string, any> = {}): Promise<{data:any;error:any}> {
+      if (name==='apply_offline_operation') {
+        restoreTables();
+        tables.celmart_sync_operations??=[];
+        const id=args.p_operation_id, command=args.p_command, kind=command?.kind;
+        try {
+          if(args.p_owner_id!=='mock-user-1')throw new Error('Inicia sesión con la cuenta que guardó estos cambios.');
+          const prior=tables.celmart_sync_operations.find(row=>row.id===id);
+          if(prior){if(JSON.stringify(prior.command)!==JSON.stringify(command))throw new Error('El contenido de una operación confirmada no puede cambiar.');return {data:{...clone(prior.result),replayed:true},error:null};}
+          let order=tables.ordenes.find(row=>row.id===command.orderId);
+          let item=tables.inventario.find(row=>row.id===(command.itemId||command.row?.id));
+          let client:any=null,movement:any=null;
+          if(['status','note','location','photo','payment','assignPart'].includes(kind)&&!order)throw new Error('La orden ya no existe en el servidor.');
+          const old=clone(order||{});
+          if(kind==='createOrder') {
+            if(tables.ordenes.some(row=>row.id===command.row.id))throw new Error('El folio ya existe.');
+            order={...clone(command.row),estado:'Recibido',created_at:command.row.created_at||new Date().toISOString(),estado_actualizado_at:new Date().toISOString(),fotos_evidencia:command.photos,repuestos_asignados:[],entregado_at:null};tables.ordenes.unshift(order);
+          } else if(kind==='status') {
+            if(order.estado!==command.to) {
+              if(order.estado!==command.from)throw new Error('Conflicto: otra persona cambió el estado.');
+              if(order.estado==='Entregado')throw new Error('La entrega original se conserva.');
+              if(command.to==='Entregado'&&(order.estado!=='Listo'||!order.metodo_pago||order.monto_cobrado==null))throw new Error('Marca Listo y registra el cobro.');
+              order.estado=command.to;order.estado_actualizado_at=new Date().toISOString();if(command.to==='Entregado')order.entregado_at??=new Date().toISOString();
+            }
+          } else if(kind==='note')order.notas_tecnicas=[clone(command.note),...(order.notas_tecnicas||[]).filter((note:any)=>note.id!==command.note.id)];
+          else if(kind==='location')order.ubicacion_fisica=command.value;
+          else if(kind==='photo')order.fotos_evidencia=[...new Set([...(order.fotos_evidencia||[]),command.url])];
+          else if(kind==='payment'){order.metodo_pago=command.method;order.monto_cobrado=command.amount;}
+          else if(kind==='assignPart') {
+            const assigned=await this.rpc('asignar_repuesto',{p_order_id:order.id,p_sku:command.part.sku,p_cantidad:command.part.cantidad});
+            if(assigned.error)throw new Error(assigned.error.message);
+            order=tables.ordenes.find(row=>row.id===order.id);item=tables.inventario.find(row=>row.id===command.itemId);
+          } else if(kind==='stock') {
+            if(!item||!Number.isInteger(command.delta)||item.stock_actual+command.delta<0)throw new Error('Stock insuficiente para aplicar el ajuste pendiente.');
+            item.stock_actual+=command.delta;movement={id,repuesto_nombre:item.nombre,tipo:command.delta>0?'reabastecimiento':'consumo',cantidad:command.delta,autor:'Taller',tiempo:'Ahora',created_at:new Date().toISOString()};tables.movimientos_inventario.unshift(movement);
+          } else if(kind==='createInventory') {
+            if(tables.inventario.some(row=>row.sku===command.row.sku))throw new Error('Ya existe un repuesto con este SKU.');
+            item={...clone(command.row),created_at:new Date().toISOString()};tables.inventario.unshift(item);
+          } else if(kind==='editInventory') {
+            if(!item)throw new Error('El repuesto ya no existe.');
+            if(item.stock_actual!==command.previousStock)throw new Error('Conflicto: el stock cambió en otro dispositivo.');
+            Object.assign(item,clone(command.row));
+          } else if(kind==='createClient') {client={...clone(command.row),reparaciones_realizadas:0,saldo_pendiente:0,ultima_visita:'Hoy'};tables.clientes.unshift(client);}
+          else throw new Error('Tipo de operación no permitido.');
+          const result:any={};
+          if(order)result.orders=[clone(order)];if(item)result.inventory=[clone(item)];if(client)result.clients=[clone(client)];if(movement)result.movements=[clone(movement)];
+          tables.celmart_sync_operations.push({id,command:clone(command),result:clone(result)});persistTables();
+          if(order)notify({eventType:kind==='createOrder'?'INSERT':'UPDATE',schema:'public',table:'ordenes',new:clone(order),old});
+          if(item)notify({eventType:kind==='createInventory'?'INSERT':'UPDATE',schema:'public',table:'inventario',new:clone(item),old:{}});
+          return {data:result,error:null};
+        } catch(error){return {data:null,error:{message:(error as Error).message}};}
+      }
       if (['resumen_caja','cerrar_caja','reingreso_garantia','asignar_repuesto'].includes(name)) {
         restoreTables();
         const day=(d=new Date())=>new Intl.DateTimeFormat('en-CA',{timeZone:'America/Mexico_City',year:'numeric',month:'2-digit',day:'2-digit'}).format(d);
@@ -526,7 +566,7 @@ export function createMockSupabaseClient() {
       }
       if (name !== 'get_order_tracking') return { data: null, error: { code: 'PGRST202', message: 'Función no encontrada.' } };
       const id = args?.p_order_id;
-      if (typeof id !== 'string' || id.length > 64 || !/^OS-[0-9]+(-G[0-9]+)?$/.test(id) || /\s/.test(id)) return { data: null, error: null };
+      if (typeof id !== 'string' || id.length > 64 || !/^OS-[0-9]+(-[A-F0-9]{8})?(-G[0-9]+)?$/.test(id) || /\s/.test(id)) return { data: null, error: null };
       restoreTables();
       const order = tables.ordenes.find((row) => row.id === id);
       if (!order) return { data: null, error: null };

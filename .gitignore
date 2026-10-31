@@ -9,3 +9,4 @@ coverage/
 
 whatsapp-server/sesion_whatsapp/
 whatsapp-server/.env
+supabase/.temp/

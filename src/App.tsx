@@ -1,7 +1,6 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useSyncExternalStore } from 'react';
 import {
   initialTechnicians,
-  initialInventoryMovements,
 } from './data/initialData';
 import {
   Order,
@@ -33,18 +32,20 @@ import { WhatsAppPreviewModal } from './components/WhatsAppPreviewModal';
 import { LoginView } from './components/LoginView';
 import { MobileWorkshopView } from './components/MobileWorkshopView';
 import { supabase } from './lib/supabase';
-import { getNextOrderNumber, mapInventoryRow, mapOrderRow, orderToRow, updateOrderWithRetry } from './lib/orderRepository';
+import { mapInventoryRow, mapOrderRow } from './lib/orderRepository';
 import { cacheWorkshopConfig, loadSharedWorkshopConfig, readWorkshopConfigCache, saveSharedWorkshopConfig } from './lib/configRepository';
 
 import { CashRegisterView } from './components/CashRegisterView';
 import { warrantyActive } from './lib/operations';
 import type { PaymentMethod } from './lib/operations';
 import {EquipmentLabelModal} from './components/EquipmentLabelModal';
+import { offlineStore, useWorkshopField, readOfflineIdentity, rememberOfflineIdentity, lockOfflineSession, sessionLocked, uniqueOrderId, mapClientRow, mapMovementRow, withSyncTimeout } from './lib/offlineRepository';
+import { browserOnline, isNetworkError, type WorkshopSnapshot } from './lib/offlineSync';
 export default function App() {
   const [labelOrder,setLabelOrder]=useState<Order|null>(null);
   const [selectedTechnician,setSelectedTechnician]=useState('');
   // Auth State
-  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => !!readOfflineIdentity());
 
   // Navigation State
   const [activeTab, setActiveTab] = useState<TabType>('dashboard');
@@ -61,7 +62,8 @@ export default function App() {
   });
 
   // Database Data States
-  const [orders, setOrders] = useState<Order[]>([]);
+  const [orders, setOrders] = useWorkshopField('orders');
+  const syncState = useSyncExternalStore(offlineStore.subscribe, offlineStore.getSnapshot, offlineStore.getSnapshot);
   const [technicians, setTechnicians] = useState<Technician[]>(() => {
     try {
       const saved = localStorage.getItem('celmart_technicians');
@@ -76,9 +78,9 @@ export default function App() {
     }
     return initialTechnicians;
   });
-  const [inventory, setInventory] = useState<InventoryItem[]>([]);
-  const [movements, setMovements] = useState<InventoryMovement[]>(initialInventoryMovements);
-  const [clients, setClients] = useState<Client[]>([]);
+  const [inventory, setInventory] = useWorkshopField('inventory');
+  const [movements] = useWorkshopField('movements');
+  const [clients] = useWorkshopField('clients');
   const [config, setConfig] = useState<WorkshopConfig>(readWorkshopConfigCache);
   const configRef = useRef(config);
   const configVersion = useRef(0);
@@ -86,16 +88,17 @@ export default function App() {
   useEffect(() => { configRef.current = config; }, [config]);
 
   const refreshSharedConfig = useCallback(async () => {
+    if (!browserOnline()) return;
     const version = ++configVersion.current;
     try {
-      const shared = await loadSharedWorkshopConfig(configRef.current);
+      const shared = await withSyncTimeout(() => loadSharedWorkshopConfig(configRef.current));
       if (version !== configVersion.current) return;
       configRef.current = shared;
       setConfig((previous) => JSON.stringify(previous) === JSON.stringify(shared) ? previous : shared);
       cacheWorkshopConfig(shared);
       setConfigError(null);
     } catch (error) {
-      if (version === configVersion.current) setConfigError(error instanceof Error ? error.message : 'No se pudo sincronizar la configuración. Se conserva la caché local.');
+      if (version === configVersion.current && !isNetworkError(error) && browserOnline()) setConfigError(error instanceof Error ? error.message : 'No se pudo sincronizar la configuración. Se conserva la caché local.');
     }
   }, []);
 
@@ -103,7 +106,7 @@ export default function App() {
     if (isAuthenticated) void refreshSharedConfig();
     return () => { configVersion.current++; };
   }, [isAuthenticated, refreshSharedConfig]);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(() => browserOnline() && !offlineStore.getSnapshot().data.orders.length);
   const [dataError, setDataError] = useState<string | null>(null);
   const fetchVersion = useRef(0);
 
@@ -146,6 +149,7 @@ export default function App() {
 
   const handleDeliveryReceipt = async (order: Order) => {
     if (sendingReceipts.current.has(order.id)) return;
+    if (offlineStore.getSnapshot().pending || offlineStore.getSnapshot().offline) { setDataError('Sincroniza la entrega antes de enviar el comprobante final. Puedes imprimir su copia local.'); return; }
     if (order.estado !== 'Entregado' || !order.fechaEntrega) {
       setDataError('Registra la entrega del equipo antes de enviar su comprobante final.');
       return;
@@ -232,93 +236,86 @@ export default function App() {
     }
   };
 
-  // 1. Cargar datos iniciales desde Supabase
+  // Hydrate synchronously from the journal; network reads only replace a clean base.
   const fetchData = useCallback(async (background = false) => {
+    if (!browserOnline() || offlineStore.getSnapshot().pending) { setLoading(false); return; }
     const version = ++fetchVersion.current;
-    if (!background) setLoading(true);
+    if (!background && !offlineStore.getSnapshot().data.orders.length) setLoading(true);
+    const readRows = async (table: string, ordered = false) => {
+      const rows: Record<string, any>[] = [];
+      for (let offset = 0; ; offset += 1000) {
+        const response = await withSyncTimeout<{data:Record<string,any>[]|null;error:unknown;status?:number}>(signal => {
+          let query = supabase.from(table).select('*').range(offset, offset + 999);
+          if (ordered) query = query.order('created_at', { ascending: false });
+          return 'abortSignal' in query ? query.abortSignal(signal) : query;
+        });
+        if (response.error) throw Object.assign(new Error(String((response.error as {message?:unknown}).message||'No se pudo leer el servidor.')), {status:response.status});
+        rows.push(...(response.data || []));
+        if (!response.data || response.data.length < 1000) return rows;
+      }
+    };
     try {
-      const [ordersResult, clientsResult, inventoryResult, techsResult, movementsResult] = await Promise.all([
-        supabase.from('ordenes').select('*').order('created_at', { ascending: false }),
-        supabase.from('clientes').select('*'),
-        supabase.from('inventario').select('*'),
-        supabase.from('tecnicos').select('*'),
-        supabase.from('movimientos_inventario').select('*').order('created_at', { ascending: false }),
+      const [orderRows, clientRows, inventoryRows, techRows, movementRows] = await Promise.all([
+        readRows('ordenes', true), readRows('clientes'), readRows('inventario'), readRows('tecnicos'), readRows('movimientos_inventario', true),
       ]);
-      if (version !== fetchVersion.current) return;
-      const failed = [ordersResult, clientsResult, inventoryResult, techsResult, movementsResult].find((result) => result.error);
-      setDataError(failed ? `No se pudieron sincronizar todos los datos: ${failed.error.message}` : null);
-      if (ordersResult.data) setOrders(ordersResult.data.map(mapOrderRow));
-      const clientesData = clientsResult.data;
-      if (clientesData) {
-        setClients(
-          clientesData.map((c: any) => ({
-            id: c.id,
-            nombre: c.nombre,
-            telefono: c.telefono,
-            email: c.email,
-            reparacionesRealizadas: c.reparaciones_realizadas,
-            saldoPendiente: Number(c.saldo_pendiente),
-            ultimaVisita: c.ultima_visita,
-            dispositivosFrecuentes: ['Móvil'],
-          }))
-        );
+      if (version !== fetchVersion.current || offlineStore.getSnapshot().pending) return;
+      const fresh: WorkshopSnapshot = { orders: orderRows.map(mapOrderRow), clients: clientRows.map(mapClientRow), inventory: inventoryRows.map(mapInventoryRow), movements: movementRows.map(mapMovementRow) };
+      await offlineStore.replaceRemote(fresh);
+      if (techRows.length) {
+        const mapped = techRows.map((t): Technician => ({ id:t.id, nombre:t.nombre, iniciales:t.iniciales||'TC', especialidad:t.especialidad||'General', estado:t.estado||'Disponible', ordenesActivas:t.ordenes_activas||0, capacidadMaxima:t.capacidad_maxima||5, horasPromedio:t.horas_promedio||2.5, efectividad:t.efectividad||98, salarioFijo:t.salario_fijo||16000, avatarBg:t.avatar_bg||'bg-blue-600' }));
+        setTechnicians(mapped);
+        try { localStorage.setItem('celmart_technicians', JSON.stringify(mapped)); } catch { /* Keep the session copy. */ }
       }
-
-      // Cargar Inventario
-      const inventarioData = inventoryResult.data;
-      if (inventarioData) {
-        setInventory(inventarioData.map(mapInventoryRow));
-      }
-
-      // Cargar Técnicos desde Supabase
-      const tecnicosData = techsResult.data;
-      if (tecnicosData && tecnicosData.length > 0) {
-        const mappedTechs: Technician[] = tecnicosData.map((t: any) => ({
-          id: t.id,
-          nombre: t.nombre,
-          iniciales: t.iniciales || t.nombre.split(' ').map((n: string) => n[0]).join('').slice(0, 2).toUpperCase(),
-          especialidad: t.especialidad || 'General',
-          estado: t.estado || 'Disponible',
-          ordenesActivas: t.ordenes_activas !== undefined ? t.ordenes_activas : (t.ordenesActivas || 0),
-          capacidadMaxima: t.capacidad_maxima !== undefined ? t.capacidad_maxima : (t.capacidadMaxima || 5),
-          horasPromedio: t.horas_promedio || 2.5,
-          efectividad: t.efectividad || 98,
-          salarioFijo: t.salario_fijo || 16000,
-          avatarBg: t.avatar_bg || 'bg-blue-600',
-        }));
-        setTechnicians(mappedTechs);
-        localStorage.setItem('celmart_technicians', JSON.stringify(mappedTechs));
-      }
-
-      // Cargar Movimientos de Inventario desde Supabase
-      const movsData = movementsResult.data;
-      if (movsData && movsData.length > 0) {
-        setMovements(
-          movsData.map((m: any) => ({
-            id: m.id,
-            repuestoNombre: m.repuesto_nombre || m.repuestoNombre,
-            codigoOrden: m.codigo_orden || m.codigoOrden,
-            tipo: m.tipo,
-            cantidad: Number(m.cantidad),
-            autor: m.autor,
-            tiempo: m.tiempo || 'Reciente',
-          }))
-        );
-      } else if (!movementsResult.error) {
-        setMovements([]);
-      }
-    } catch (err) {
-      console.error('Error conectando con Supabase:', err);
-      if (version === fetchVersion.current) setDataError('No se pudo conectar con Supabase. Revisa la conexión y vuelve a sincronizar.');
-    } finally {
-      if (version === fetchVersion.current) setLoading(false);
-    }
+      offlineStore.networkChanged();
+      setDataError(null);
+    } catch (error) {
+      if (isNetworkError(error) || !browserOnline()) { offlineStore.networkFailed(); setDataError(null); }
+      else if (version === fetchVersion.current) setDataError(error instanceof Error ? error.message : 'No se pudieron sincronizar los datos. Se conserva la caché local.');
+    } finally { if (version === fetchVersion.current) setLoading(false); }
   }, []);
 
   useEffect(() => {
-    if (isAuthenticated) void fetchData();
-    return () => { fetchVersion.current++; };
-  }, [isAuthenticated, fetchData]);
+    let active = true;
+    const restore = async () => {
+      if (sessionLocked()) return;
+      const cachedUser = readOfflineIdentity();
+      if (!browserOnline()) { if (cachedUser) { await offlineStore.bindOwner(cachedUser); if (active) setIsAuthenticated(true); } return; }
+      try {
+        const {data,error} = await withSyncTimeout<{data:{session:{user:{id:string}}|null};error:unknown}>(() => supabase.auth.getSession(), 4000);
+        if (error) throw error;
+        if (data.session?.user?.id) {
+          await offlineStore.bindOwner(data.session.user.id); rememberOfflineIdentity(data.session.user.id);
+          if (active) setIsAuthenticated(true);
+        } else if (active) setIsAuthenticated(false);
+      } catch (error) { if (active && cachedUser && isNetworkError(error)) setIsAuthenticated(true); }
+    };
+    void restore();
+    return () => { active=false; };
+  }, []);
+
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    let active = true;
+    let previousPending = offlineStore.getSnapshot().pending;
+    const synchronize = async (retry = false) => {
+      offlineStore.networkChanged();
+      if (!browserOnline()) return;
+      await offlineStore.flush(retry);
+      if (active && !offlineStore.getSnapshot().pending) { await fetchData(true); void refreshSharedConfig(); }
+    };
+    const online = () => { void synchronize(true); };
+    const offline = () => { offlineStore.networkChanged(); setLoading(false); };
+    const focus = () => { if (browserOnline()) void synchronize(); };
+    const unsubscribe = offlineStore.subscribe(() => {
+      const pending = offlineStore.getSnapshot().pending;
+      if (previousPending && !pending && active) void fetchData(true);
+      previousPending = pending;
+    });
+    window.addEventListener('online', online); window.addEventListener('offline', offline); window.addEventListener('focus', focus);
+    const timer = setInterval(() => { if (browserOnline() && offlineStore.getSnapshot().pending && !offlineStore.getSnapshot().error) void synchronize(); }, 30000);
+    void synchronize();
+    return () => { active=false; clearInterval(timer); unsubscribe(); window.removeEventListener('online',online); window.removeEventListener('offline',offline); window.removeEventListener('focus',focus); fetchVersion.current++; };
+  }, [isAuthenticated, fetchData, refreshSharedConfig]);
 
   useEffect(() => {
     if (!isAuthenticated) return;
@@ -338,9 +335,7 @@ export default function App() {
       .subscribe((status: string) => {
         if (!active) return;
         if (status === 'SUBSCRIBED') { refresh(); refreshConfig(); }
-        if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
-          setDataError('Se perdió la sincronización en tiempo real. Comprueba la conexión y la configuración de Realtime.');
-        }
+        if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') void fetchData(true);
       });
     window.addEventListener('online', refresh);
     window.addEventListener('focus', refresh);
@@ -394,71 +389,52 @@ export default function App() {
   const urgentOrdersCount = orders.filter((o) => o.prioridadUrgente && o.estado !== 'Entregado').length;
   const lowStockCount = inventory.filter((i) => i.stockActual <= i.stockMinimo).length;
 
-  // Guardar nueva orden en Supabase
   const handleSaveNewOrder = async (newOrder: Order, printNow: boolean) => {
-    let candidate = newOrder;
     try {
-      for (let attempt = 0; attempt < 5; attempt++) {
-        const { data, error } = await supabase.from('ordenes').insert([orderToRow(candidate)]).select('*').single();
-        if (!error) {
-          if (!data) throw new Error('No se recibió la orden guardada. Vuelve a sincronizar.');
-          const saved = mapOrderRow(data);
-          applySavedOrder(saved);
-          setDataError(null);
-          if (printNow) setSelectedOrderForPrint(saved);
-          void notifyOrderChange(saved, 'ingreso');
-          return true;
-        }
-        // Two receptions may propose the same folio. Retry against the latest rows.
-        if (error.code !== '23505') throw new Error(error.message);
-        candidate = { ...newOrder, id: `OS-${await getNextOrderNumber()}` };
-      }
-      throw new Error('No se pudo reservar el folio. Intenta guardar de nuevo.');
-    } catch (error) {
-      setDataError(`No se guardó la orden: ${error instanceof Error ? error.message : 'error de conexión'}`);
-      return false;
-    }
+      const now = new Date().toISOString();
+      const candidate = { ...newOrder, id: uniqueOrderId(nextOrderNumber), fechaIngreso: now, estadoActualizadoAt: now };
+      fetchVersion.current++;
+      const result = await offlineStore.submit({kind:'createOrder',order:candidate});
+      const saved = result.data.orders.find(order=>order.id===candidate.id) || candidate;
+      setDataError(null);
+      if (printNow) setSelectedOrderForPrint(saved);
+      if (!result.pending) void notifyOrderChange(saved,'ingreso');
+      return true;
+    } catch (error) { setDataError(error instanceof Error?error.message:'No se pudo guardar la orden localmente.'); return false; }
   };
 
-  // Actualizar estado de orden en Supabase
   const handleUpdateOrderStatus = async (orderId: string, newStatus: OrderStatus) => {
-    const previous = orders.find((order) => order.id === orderId);
-    if (!previous) throw new Error('La orden no está disponible. Vuelve a sincronizar.');
-    if (previous.estado === newStatus) return;
-    if (previous.estado==='Entregado') throw new Error('La entrega original se conserva. Usa Registrar Reingreso por Garantía.');
-    if (newStatus === 'Entregado' && (!previous.metodoPago || previous.montoCobrado == null)) { setSelectedOrderForDrawer(previous); throw new Error('Registra el método y el importe cobrado en la ficha antes de entregar.'); }
-    if (newStatus === 'Entregado' && previous.estado !== 'Listo') {
-      throw new Error('Marca el equipo como Listo antes de registrar su entrega.');
-    }
-    const { data, error } = await supabase.from('ordenes').update({ estado: newStatus })
-      .eq('id', orderId).eq('estado', previous.estado).select('*').maybeSingle();
-    if (error) throw new Error(error.message);
-    if (!data) {
-      void fetchData(true);
-      throw new Error('Otra persona cambió esta orden. Revisa su estado actualizado antes de continuar.');
-    }
-    const saved = mapOrderRow(data);
-    applySavedOrder(saved);
-    if (newStatus === 'Entregado') setLastDeliveredOrder(saved);
-    else void notifyOrderChange(saved, determineTemplateKeyForStatus(newStatus));
+    const previous=offlineStore.getSnapshot().data.orders.find(order=>order.id===orderId);
+    if (!previous) throw new Error('La orden no está disponible en este dispositivo.');
+    if (previous.estado===newStatus) return;
+    fetchVersion.current++;
+    const result=await offlineStore.submit({kind:'status',orderId,from:previous.estado,to:newStatus,at:new Date().toISOString()});
+    const saved=result.data.orders.find(order=>order.id===orderId)!;
+    if (newStatus==='Entregado') setLastDeliveredOrder(saved);
+    else if (!result.pending) void notifyOrderChange(saved,determineTemplateKeyForStatus(newStatus));
   };
 
-  // Eliminar orden definitivamente de la base de datos
-  const handleDeleteOrder = async (orderId: string) => {
-    if(orders.find(o=>o.id===orderId)?.estado==='Entregado'){setDataError('Las entregas con historial financiero se conservan.');return;}
-    setOrders((prev) => prev.filter((o) => o.id !== orderId));
-    if (selectedOrderForDrawer?.id === orderId) setSelectedOrderForDrawer(null);
-    if (selectedOrderForPrint?.id === orderId) setSelectedOrderForPrint(null);
-    if (selectedOrderForWhatsApp?.id === orderId) setSelectedOrderForWhatsApp(null);
-
-    const { error } = await supabase.from('ordenes').delete().eq('id', orderId);
-    if (error) {
-      console.error('Error eliminando orden:', error);
-    }
+  // Administrative deletes are never optimistic: an unavailable API must
+  // not remove a cached record that still exists on the server.
+  const handleDeleteOrder=async(orderId:string)=>{
+    if(!browserOnline()||offlineStore.getSnapshot().offline||offlineStore.getSnapshot().pending){setDataError('Sincroniza los cambios antes de eliminar una orden.');return;}
+    if(orders.find(order=>order.id===orderId)?.estado==='Entregado'){setDataError('Las entregas con historial financiero se conservan.');return;}
+    try {
+      const result=await withSyncTimeout<{error:unknown}>(()=>supabase.from('ordenes').delete().eq('id',orderId));
+      if(result.error)throw result.error;
+      fetchVersion.current++;
+      setOrders(previous=>previous.filter(order=>order.id!==orderId));
+      if(selectedOrderForDrawer?.id===orderId)setSelectedOrderForDrawer(null);
+      if(selectedOrderForPrint?.id===orderId)setSelectedOrderForPrint(null);
+      if(selectedOrderForWhatsApp?.id===orderId)setSelectedOrderForWhatsApp(null);
+    } catch(error){if(isNetworkError(error))offlineStore.networkFailed();setDataError('No se pudo eliminar la orden. Su copia local se conserva.');}
   };
+
+  const onlineAdministration=()=>{if(!browserOnline()||offlineStore.getSnapshot().offline||offlineStore.getSnapshot().pending){setDataError('Esta operación requiere conexión y terminar la sincronización pendiente.');return false;}return true;};
 
   // Gestión de Técnicos: CRUD completo y actualizaciones dinámicas
   const handleAddTechnician = async (newTechData: Omit<Technician, 'id' | 'ordenesActivas'>) => {
+    if(!onlineAdministration())return;
     const initials = newTechData.nombre
       .trim()
       .split(' ')
@@ -507,6 +483,7 @@ export default function App() {
   };
 
   const handleEditTechnician = async (updatedTech: Technician) => {
+    if(!onlineAdministration())return;
     const initials = updatedTech.nombre
       .trim()
       .split(' ')
@@ -535,6 +512,7 @@ export default function App() {
   };
 
   const handleDeleteTechnician = async (techId: string) => {
+    if(!onlineAdministration())return;
     const updated = technicians.filter((t) => t.id !== techId);
     setTechnicians(updated);
     try {
@@ -547,6 +525,7 @@ export default function App() {
   };
 
   const handleUpdateTechnicianStatus = async (techId: string, newStatus: Technician['estado']) => {
+    if(!onlineAdministration())return;
     const updated = technicians.map((t) => (t.id === techId ? { ...t, estado: newStatus } : t));
     setTechnicians(updated);
     try {
@@ -559,6 +538,7 @@ export default function App() {
   };
 
   const handleUpdateTechnicianSpecialty = async (techId: string, newSpecialty: string) => {
+    if(!onlineAdministration())return;
     const updated = technicians.map((t) => (t.id === techId ? { ...t, especialidad: newSpecialty } : t));
     setTechnicians(updated);
     try {
@@ -572,136 +552,73 @@ export default function App() {
 
   const handleAddNoteToOrder = async (orderId: string, content: string, tipo: TechNote['tipo'] = 'diagnostico') => {
     if (!content.trim()) return;
-    const now = new Date();
-    const formattedDate = now.toLocaleString('es-MX', { dateStyle: 'medium', timeStyle: 'short' });
-    const newNote: TechNote = { id: `note-${crypto.randomUUID()}`, autor: 'Técnico', fecha: formattedDate, contenido: content.trim(), tipo };
-    const saved = await updateOrderWithRetry(orderId, ['notas_tecnicas'], (current) => ({
-      notas_tecnicas: [newNote, ...current.notasTecnicas],
-    }));
-    applySavedOrder(saved);
+    const note: TechNote={id:`note-${crypto.randomUUID()}`,autor:'Técnico',fecha:new Date().toLocaleString('es-MX',{dateStyle:'medium',timeStyle:'short'}),contenido:content.trim(),tipo};
+    fetchVersion.current++;
+    await offlineStore.submit({kind:'note',orderId,note});
   };
-
   const handleAssignPartToOrder = async (orderId: string, part: AssignedPart) => {
-    const {data,error}=await supabase.rpc('asignar_repuesto',{p_order_id:orderId,p_sku:part.sku,p_cantidad:part.cantidad});
-    if(error) throw new Error(error.message);
-    applySavedOrder(mapOrderRow(data));
+    const item=offlineStore.getSnapshot().data.inventory.find(item=>item.sku===part.sku);
+    if(!item)throw new Error('El repuesto no está disponible en este dispositivo.');
+    fetchVersion.current++;
+    await offlineStore.submit({kind:'assignPart',orderId,part,itemId:item.id});
   };
   const handlePayment=async(id:string,method:PaymentMethod,amount:number)=>{
-    if(!Number.isFinite(amount)||amount<0)throw new Error('Importe inválido');
-    const {data,error}=await supabase.from('ordenes').update({metodo_pago:method,monto_cobrado:amount}).eq('id',id).select('*').single();
-    if(error)throw new Error(error.message);applySavedOrder(mapOrderRow(data));
+    fetchVersion.current++;
+    await offlineStore.submit({kind:'payment',orderId:id,method,amount});
   };
   const handleWarranty=async(id:string,reason:string)=>{
+    if(!browserOnline()||offlineStore.getSnapshot().offline||offlineStore.getSnapshot().pending)throw new Error('Sincroniza las órdenes para validar el reingreso por garantía.');
     const {data,error}=await supabase.rpc('reingreso_garantia',{p_order_id:id,p_motivo:reason});
     if(error)throw new Error(error.message);const child=mapOrderRow(data);applySavedOrder(child);setSelectedOrderForDrawer(child);
     setAutomationNotice(`${child.id} · Reingreso asignado a ${child.tecnico?.nombre||'técnico pendiente'}. Aviso disponible en su cola de garantía.`);
   };
 
-  const handleSaveLocation=async(id:string,value:string)=>{
-    const location=value.trim();if(!location||location.length>120)throw new Error('Indica una ubicación de hasta 120 caracteres.');
-    const {data,error}=await supabase.from('ordenes').update({ubicacion_fisica:location}).eq('id',id).select('*').single();
-    if(error)throw new Error(error.message);applySavedOrder(mapOrderRow(data));
-  };
-  const handleAddPhotoToOrder = async (orderId: string, photoUrl: string) => {
-    const saved = await updateOrderWithRetry(orderId, ['fotos_evidencia'], (current) => ({
-      fotos_evidencia: [...new Set([...(current.fotosEvidencia ?? []), photoUrl])],
-    }));
-    applySavedOrder(saved);
-  };
-
-  const handleUpdateInventoryStock = async (itemId: string, delta: number) => {
-    const item = inventory.find((i) => i.id === itemId);
-    if (!item) return;
-    const newStock = Math.max(0, item.stockActual + delta);
-    setInventory((prev) => prev.map((i) => (i.id === itemId ? { ...i, stockActual: newStock } : i)));
-    await supabase.from('inventario').update({ stock_actual: newStock }).eq('id', itemId);
-
-    // Registrar movimiento real de inventario
-    const newMovement: InventoryMovement = {
-      id: `mov-${Date.now()}`,
-      repuestoNombre: item.nombre,
-      tipo: delta > 0 ? 'reabastecimiento' : 'consumo',
-      cantidad: delta,
-      autor: 'Administrador',
-      tiempo: 'Ahora',
-    };
-    setMovements((prev) => [newMovement, ...prev]);
-
-    await supabase.from('movimientos_inventario').insert([
-      {
-        id: newMovement.id,
-        repuesto_nombre: newMovement.repuestoNombre,
-        tipo: newMovement.tipo,
-        cantidad: newMovement.cantidad,
-        autor: newMovement.autor,
-        tiempo: newMovement.tiempo,
-      },
-    ]);
-  };
-
-  const handleAddInventoryItem = async (newItem: Omit<InventoryItem, 'id'>) => {
-    const { data, error } = await supabase.from('inventario').insert([
-      {
-        nombre: newItem.nombre,
-        sku: newItem.sku,
-        categoria: newItem.categoria,
-        stock_actual: newItem.stockActual,
-        stock_minimo: newItem.stockMinimo,
-        costo_compra: newItem.costoCompra,
-        precio_venta: newItem.precioVenta,
-        compatibilidad: newItem.compatibilidad,
-        ubicacion: newItem.ubicacion,
-        imagen_url: newItem.imagenUrl ?? null,
-      },
-    ]).select('*').single();
-    if (error || !data) throw new Error(error?.message ?? 'No se pudo crear el repuesto.');
-    const saved = mapInventoryRow(data);
+  const handleSaveLocation=async(orderId:string,value:string)=>{
     fetchVersion.current++;
-    setInventory((previous) => [saved, ...previous.filter((item) => item.id !== saved.id)]);
-    void fetchData(true);
-    return saved;
+    await offlineStore.submit({kind:'location',orderId,value:value.trim()});
   };
-
-  const handleEditInventoryItem = async (updatedItem: InventoryItem) => {
-    const { data, error } = await supabase.from('inventario').update({
-      nombre: updatedItem.nombre,
-      sku: updatedItem.sku,
-      categoria: updatedItem.categoria,
-      stock_actual: updatedItem.stockActual,
-      stock_minimo: updatedItem.stockMinimo,
-      costo_compra: updatedItem.costoCompra,
-      precio_venta: updatedItem.precioVenta,
-      compatibilidad: updatedItem.compatibilidad,
-      ubicacion: updatedItem.ubicacion,
-      imagen_url: updatedItem.imagenUrl ?? null,
-    }).eq('id', updatedItem.id).select('*').maybeSingle();
-    if (error || !data) throw new Error(error?.message ?? 'El repuesto no existe o no tienes permiso para actualizarlo.');
-    const saved = mapInventoryRow(data);
+  const handleAddPhotoToOrder=async(orderId:string,url:string)=>{
     fetchVersion.current++;
-    setInventory((previous) => previous.map((item) => item.id === saved.id ? saved : item));
-    void fetchData(true);
-    return saved;
+    await offlineStore.submit({kind:'photo',orderId,url});
+  };
+  const handleUpdateInventoryStock=async(itemId:string,delta:number)=>{
+    const item=offlineStore.getSnapshot().data.inventory.find(item=>item.id===itemId);
+    if(!item)return;
+    fetchVersion.current++;
+    await offlineStore.submit({kind:'stock',itemId,delta,movement:{id:crypto.randomUUID(),repuestoNombre:item.nombre,tipo:delta>0?'reabastecimiento':'consumo',cantidad:delta,autor:'Taller',tiempo:'Ahora'}});
+  };
+  const handleAddInventoryItem=async(newItem:Omit<InventoryItem,'id'>)=>{
+    const item={...newItem,id:crypto.randomUUID()};
+    fetchVersion.current++;
+    const result=await offlineStore.submit({kind:'createInventory',item});
+    return result.data.inventory.find(row=>row.id===item.id)||item;
+  };
+  const handleEditInventoryItem=async(item:InventoryItem)=>{
+    const previous=offlineStore.getSnapshot().data.inventory.find(row=>row.id===item.id);
+    if(!previous)throw new Error('El repuesto no está disponible.');
+    fetchVersion.current++;
+    const result=await offlineStore.submit({kind:'editInventory',item,previousStock:previous.stockActual});
+    return result.data.inventory.find(row=>row.id===item.id)||item;
   };
 
-  const handleDeleteInventoryItem = async (itemId: string) => {
-    setInventory((prev) => prev.filter((i) => i.id !== itemId));
-    await supabase.from('inventario').delete().eq('id', itemId);
+  const handleDeleteInventoryItem=async(itemId:string)=>{
+    if(!browserOnline()||offlineStore.getSnapshot().offline||offlineStore.getSnapshot().pending){setDataError('Sincroniza los cambios antes de eliminar un repuesto.');return;}
+    try {
+      const result=await withSyncTimeout<{error:unknown}>(()=>supabase.from('inventario').delete().eq('id',itemId));
+      if(result.error)throw result.error;
+      fetchVersion.current++;
+      setInventory(previous=>previous.filter(item=>item.id!==itemId));
+    } catch(error){if(isNetworkError(error))offlineStore.networkFailed();setDataError('No se pudo eliminar el repuesto. Su copia local se conserva.');}
   };
 
-  const handleAddClient = async (
-    newClientData: Omit<Client, 'id' | 'reparacionesRealizadas' | 'saldoPendiente' | 'ultimaVisita'>
-  ) => {
-    const { error } = await supabase.from('clientes').insert([
-      {
-        nombre: newClientData.nombre,
-        telefono: newClientData.telefono,
-        email: newClientData.email,
-      },
-    ]);
-    if (!error) fetchData();
+  const handleAddClient=async(data:Omit<Client,'id'|'reparacionesRealizadas'|'saldoPendiente'|'ultimaVisita'>)=>{
+    const client={...data,id:crypto.randomUUID(),reparacionesRealizadas:0,saldoPendiente:0,ultimaVisita:'Hoy'};
+    fetchVersion.current++;
+    await offlineStore.submit({kind:'createClient',client});
   };
 
   const handleSaveConfig = async (updated: WorkshopConfig) => {
+    if(!browserOnline()||offlineStore.getSnapshot().offline)throw new Error('Reconecta para guardar la configuración compartida.');
     configVersion.current++;
     const saved = await saveSharedWorkshopConfig(updated);
     configVersion.current++;
@@ -723,7 +640,7 @@ export default function App() {
   });
 
   if (!isAuthenticated) {
-    return <LoginView onLogin={() => setIsAuthenticated(true)} />;
+    return <LoginView onLogin={async userId=>{await offlineStore.bindOwner(userId);rememberOfflineIdentity(userId);setIsAuthenticated(true);}} />;
   }
 
   return (
@@ -743,14 +660,14 @@ export default function App() {
         onCloseMobile={() => setMobileMenuOpen(false)}
       />
       <div className="flex-1 flex flex-col min-w-0 h-full overflow-hidden">
-        <Header warrantyNotifications={orders.filter(o=>o.parentOrderId&&o.estado==='Garantía').map(o=>({id:o.id,technician:o.tecnico?.nombre||'Por asignar'}))} onOpenWarranty={id=>setSelectedOrderForDrawer(orders.find(o=>o.id===id)||null)}
+        <Header onDiscardSync={()=>{void offlineStore.discardRejected().then(()=>offlineStore.flush(true)).then(()=>fetchData(true)).catch(error=>setDataError(error.message));}} syncState={syncState} onRetrySync={()=>{void offlineStore.flush(true).then(()=>fetchData(true));}} warrantyNotifications={orders.filter(o=>o.parentOrderId&&o.estado==='Garantía').map(o=>({id:o.id,technician:o.tecnico?.nombre||'Por asignar'}))} onOpenWarranty={id=>setSelectedOrderForDrawer(orders.find(o=>o.id===id)||null)}
           globalSearch={globalSearch}
           setGlobalSearch={setGlobalSearch}
           onOpenNewOrder={openNewOrder}
           viewMode={viewMode}
           onViewModeChange={changeViewMode}
           urgentOrdersCount={urgentOrdersCount}
-          onLogout={() => setIsAuthenticated(false)}
+          onLogout={()=>{lockOfflineSession();setIsAuthenticated(false);void supabase.auth.signOut();}}
           onToggleMobileMenu={() => setMobileMenuOpen(!mobileMenuOpen)}
         />
         <main className={`flex-1 overflow-y-auto min-h-0 ${viewMode === 'taller' && activeTab === 'dashboard' ? 'p-0' : 'p-4 sm:p-6'} space-y-4`}>
@@ -839,7 +756,7 @@ export default function App() {
             <div className="animate-in fade-in duration-150">
               <InventoryView
                 inventory={inventory}
-                onUpdateStock={handleUpdateInventoryStock}
+                onUpdateStock={(id,delta)=>{void handleUpdateInventoryStock(id,delta).catch(error=>setDataError(error.message));}}
                 onAddInventoryItem={handleAddInventoryItem}
                 onEditInventoryItem={handleEditInventoryItem}
                 onDeleteInventoryItem={handleDeleteInventoryItem}

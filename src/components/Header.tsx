@@ -12,7 +12,106 @@ import {
   X,
 } from 'lucide-react';
 
+interface SyncIndicatorState {
+  offline: boolean;
+  pending: number;
+  syncing: boolean;
+  error: string | null;
+  canDiscard?: boolean;
+}
+function SyncIndicator({
+  state,
+  onRetry,
+  onDiscard,
+}: {
+  state: SyncIndicatorState;
+  onRetry?: () => void;
+  onDiscard?: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const close = (event: PointerEvent) => {
+      if (event.target instanceof Node && !ref.current?.contains(event.target))
+        setOpen(false);
+    };
+    const escape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setOpen(false);
+    };
+    document.addEventListener('pointerdown', close);
+    window.addEventListener('keydown', escape);
+    return () => {
+      document.removeEventListener('pointerdown', close);
+      window.removeEventListener('keydown', escape);
+    };
+  }, []);
+  if (!state.offline && !state.pending && !state.syncing && !state.error)
+    return null;
+  return (
+    <div ref={ref} className="relative min-w-0">
+      <button
+        type="button"
+        aria-label="Estado de sincronización"
+        aria-expanded={open}
+        onClick={() => setOpen(!open)}
+        title={
+          state.error ||
+          `${state.pending} cambios guardados en este dispositivo`
+        }
+        className="block max-w-[76px] sm:max-w-none truncate rounded-md border border-zinc-800/80 bg-[#1c1c20] px-1.5 py-1 text-[11px] font-mono text-amber-300/80"
+      >
+        {state.offline
+          ? '⚡ Offline'
+          : state.error
+            ? '⚠ Pendiente'
+            : '🔄 Sincronizando...'}
+      </button>
+      {open && (
+        <div className="absolute right-0 mt-2 w-60 max-w-[calc(100vw-2rem)] rounded-lg border border-zinc-800/80 bg-[#161619] p-3 shadow-xl text-xs text-zinc-400 z-50">
+          <p>
+            {state.pending} cambios pendientes, guardados en este dispositivo.
+          </p>
+          {state.error && (
+            <p role="alert" className="mt-2 text-amber-300">
+              {state.error}
+            </p>
+          )}
+          {onRetry && (
+            <button
+              type="button"
+              disabled={state.syncing}
+              onClick={onRetry}
+              className="mt-3 rounded-md border border-zinc-700/60 bg-[#1c1c20] px-2 py-1 text-zinc-200 disabled:opacity-40"
+            >
+              Reintentar sincronización
+            </button>
+          )}
+          {state.canDiscard && onDiscard && (
+            <button
+              type="button"
+              onClick={() => {
+                if (
+                  window.confirm(
+                    'Se descartará el cambio rechazado. Si creó una orden o repuesto, también se quitarán sus cambios locales dependientes. ¿Conservar los datos del servidor?'
+                  )
+                )
+                  onDiscard();
+              }}
+              className="mt-2 block text-[11px] text-zinc-500 underline"
+            >
+              Conservar datos del servidor
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 interface HeaderProps {
+  syncState?: SyncIndicatorState;
+  onRetrySync?: () => void;
+  onDiscardSync?: () => void;
   globalSearch: string;
   setGlobalSearch: (query: string) => void;
   onOpenNewOrder: () => void;
@@ -26,6 +125,9 @@ interface HeaderProps {
 }
 
 export function Header({
+  syncState,
+  onRetrySync,
+  onDiscardSync,
   globalSearch,
   setGlobalSearch,
   onOpenNewOrder,
@@ -134,6 +236,13 @@ export function Header({
             </button>
           ))}
         </div>
+        {syncState && (
+          <SyncIndicator
+            state={syncState}
+            onRetry={onRetrySync}
+            onDiscard={onDiscardSync}
+          />
+        )}
         <div ref={notificationRef} className="relative">
           <button
             id="btn-notifications"

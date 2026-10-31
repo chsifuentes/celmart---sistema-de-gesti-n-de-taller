@@ -3,7 +3,7 @@ import { Lock, Mail, Eye, EyeOff, Loader2 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 
 interface LoginViewProps {
-  onLogin: () => void;
+  onLogin: (userId: string) => void | Promise<void>;
 }
 
 export const LoginView: React.FC<LoginViewProps> = ({ onLogin }) => {
@@ -28,7 +28,8 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLogin }) => {
     if (error) {
       setErrorMessage('Credenciales incorrectas en Supabase.');
     } else if (data.session) {
-      onLogin();
+      try { await onLogin(data.session.user.id); }
+      catch (error) { setErrorMessage(error instanceof Error ? error.message : 'No se pudo abrir la sesión local.'); }
     }
   };
 

@@ -87,13 +87,13 @@ test('service worker caches only declared static assets and leaves API/media/POS
   const handlers: Record<string, (event: any) => void> = {};
   const cachedPaths: string[] = [];
   const deleted: string[] = [];
-  const offline = new Response('Reconnect to CelMart', { headers: { 'Content-Type': 'text/html' } });
+  const offline = new Response('<main>CelMart cached application shell</main>', { headers: { 'Content-Type': 'text/html' } });
   const context = vm.createContext({
-    self: { location: { origin: 'https://celmart.example' }, clients: { claim: async () => undefined }, addEventListener: (name: string, callback: (event: any) => void) => { handlers[name] = callback; } },
+    self: { __CELMART_ASSETS__: ['/assets/app-hash.js','/assets/app-hash.css'], location: { origin: 'https://celmart.example' }, clients: { claim: async () => undefined }, addEventListener: (name: string, callback: (event: any) => void) => { handlers[name] = callback; } },
     caches: {
-      open: async () => ({ addAll: async (paths: string[]) => { cachedPaths.push(...paths); }, match: async () => undefined }),
+      open: async () => ({ addAll: async (paths: string[]) => { cachedPaths.push(...paths); }, match: async (path:string) => path === '/index.html' ? offline.clone() : undefined }),
       match: async (path: string) => path === '/offline.html' ? offline : undefined,
-      keys: async () => ['celmart-static-v0', 'celmart-static-v1', 'other-app-cache'],
+      keys: async () => ['celmart-static-v0', 'celmart-shell-old', 'celmart-shell-__CELMART_BUILD__', 'other-app-cache'],
       delete: async (key: string) => { deleted.push(key); return true; },
     },
     fetch: async () => { throw new Error('Offline fixture'); }, URL, Response,
@@ -103,10 +103,13 @@ test('service worker caches only declared static assets and leaves API/media/POS
   handlers.install({ waitUntil(promise: Promise<unknown>) { work = promise; } });
   await work;
   assert.ok(cachedPaths.includes('/offline.html'));
-  assert.ok(cachedPaths.every((path) => path === '/manifest.json' || path === '/offline.html' || path.startsWith('/icons/')));
+  assert.ok(cachedPaths.includes('/index.html'));
+  assert.ok(cachedPaths.includes('/assets/app-hash.js'));
+  assert.ok(cachedPaths.includes('/assets/app-hash.css'));
+  assert.ok(cachedPaths.every(path => !/supabase|api\//.test(path)));
   handlers.activate({ waitUntil(promise: Promise<unknown>) { work = promise; } });
   await work;
-  assert.deepEqual(deleted, ['celmart-static-v0']);
+  assert.deepEqual(deleted, ['celmart-static-v0','celmart-shell-old']);
 
   for (const request of [
     { url: 'https://celmart.example/api/config', method: 'GET', mode: 'cors' },
@@ -121,5 +124,5 @@ test('service worker caches only declared static assets and leaves API/media/POS
   let navigation: Promise<Response> | undefined;
   handlers.fetch({ request: { url: 'https://celmart.example/?track=OS-123', method: 'GET', mode: 'navigate' }, respondWith(response: Promise<Response>) { navigation = response; } });
   assert.ok(navigation);
-  assert.equal(await (await navigation).text(), 'Reconnect to CelMart');
+  assert.equal(await (await navigation).text(), '<main>CelMart cached application shell</main>');
 });

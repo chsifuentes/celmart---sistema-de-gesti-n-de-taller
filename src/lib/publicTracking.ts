@@ -28,7 +28,7 @@ const nonNegativeNumber = (value: unknown) => {
 };
 
 export function isValidTrackingOrderId(value: string): boolean {
-  return value.length <= 64 && /^OS-[0-9]+(-G[0-9]+)?$/.exec(value)?.[0] === value;
+  return value.length <= 64 && /^OS-[0-9]+(-[A-F0-9]{8})?(-G[0-9]+)?$/.exec(value)?.[0] === value;
 }
 
 function publicPhotoUrl(value: unknown): string | null {

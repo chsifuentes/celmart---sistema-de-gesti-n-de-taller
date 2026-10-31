@@ -6,6 +6,39 @@ import { Header } from '../src/components/Header';
 import { InventoryView } from '../src/components/InventoryView';
 import { initialInventoryItems } from '../src/data/initialData';
 
+test('the minimal sync pill appears only offline or with pending synchronization', () => {
+  const props = {
+    globalSearch: '',
+    setGlobalSearch() {},
+    onOpenNewOrder() {},
+    urgentOrdersCount: 0,
+    viewMode: 'recepcion' as const,
+    onViewModeChange() {},
+  };
+  const clean = renderToStaticMarkup(
+    createElement(Header, {
+      ...props,
+      syncState: { offline: false, pending: 0, syncing: false, error: null },
+    })
+  );
+  assert.doesNotMatch(clean, /Estado de sincronización/);
+  const offline = renderToStaticMarkup(
+    createElement(Header, {
+      ...props,
+      syncState: { offline: true, pending: 2, syncing: false, error: null },
+    })
+  );
+  assert.match(offline, /⚡ Offline/);
+  assert.doesNotMatch(offline, /<select/);
+  const syncing = renderToStaticMarkup(
+    createElement(Header, {
+      ...props,
+      syncState: { offline: false, pending: 2, syncing: true, error: null },
+    })
+  );
+  assert.match(syncing, /🔄 Sincronizando/);
+});
+
 test('both operation modes keep global search and compact actions without configuration selectors', () => {
   for (const viewMode of ['recepcion', 'taller'] as const) {
     const html = renderToStaticMarkup(

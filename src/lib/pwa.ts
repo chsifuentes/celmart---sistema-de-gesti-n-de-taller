@@ -1,4 +1,4 @@
-/** Install support uses only static resources; workshop/API data is never cached. */
+/** The worker precaches the compiled shell; private data stays in the local journal. */
 export function registerPWA(): void {
   if (typeof window === 'undefined' || typeof navigator === 'undefined'
     || !(import.meta as any).env?.PROD || !('serviceWorker' in navigator)) return;
