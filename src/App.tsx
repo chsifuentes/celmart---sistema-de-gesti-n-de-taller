@@ -39,7 +39,10 @@ import { cacheWorkshopConfig, loadSharedWorkshopConfig, readWorkshopConfigCache,
 import { CashRegisterView } from './components/CashRegisterView';
 import { warrantyActive } from './lib/operations';
 import type { ShiftRole, PaymentMethod } from './lib/operations';
+import {EquipmentLabelModal} from './components/EquipmentLabelModal';
 export default function App() {
+  const [labelOrder,setLabelOrder]=useState<Order|null>(null);
+  const [selectedTechnician,setSelectedTechnician]=useState('');
   const [shiftRole,setShiftRole]=useState<ShiftRole>('recepcion');
   // Auth State
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
@@ -397,12 +400,14 @@ export default function App() {
     let candidate = newOrder;
     try {
       for (let attempt = 0; attempt < 5; attempt++) {
-        const { error } = await supabase.from('ordenes').insert([orderToRow(candidate)]);
+        const { data, error } = await supabase.from('ordenes').insert([orderToRow(candidate)]).select('*').single();
         if (!error) {
-          applySavedOrder(candidate);
+          if (!data) throw new Error('No se recibió la orden guardada. Vuelve a sincronizar.');
+          const saved = mapOrderRow(data);
+          applySavedOrder(saved);
           setDataError(null);
-          if (printNow) setSelectedOrderForPrint(candidate);
-          void notifyOrderChange(candidate, 'ingreso');
+          if (printNow) setSelectedOrderForPrint(saved);
+          void notifyOrderChange(saved, 'ingreso');
           return true;
         }
         // Two receptions may propose the same folio. Retry against the latest rows.
@@ -594,6 +599,11 @@ export default function App() {
     setAutomationNotice(`${child.id} · Reingreso asignado a ${child.tecnico?.nombre||'técnico pendiente'}. Aviso disponible en su cola de garantía.`);
   };
 
+  const handleSaveLocation=async(id:string,value:string)=>{
+    const location=value.trim();if(!location||location.length>120)throw new Error('Indica una ubicación de hasta 120 caracteres.');
+    const {data,error}=await supabase.from('ordenes').update({ubicacion_fisica:location}).eq('id',id).select('*').single();
+    if(error)throw new Error(error.message);applySavedOrder(mapOrderRow(data));
+  };
   const handleAddPhotoToOrder = async (orderId: string, photoUrl: string) => {
     const saved = await updateOrderWithRetry(orderId, ['fotos_evidencia'], (current) => ({
       fotos_evidencia: [...new Set([...(current.fotosEvidencia ?? []), photoUrl])],
@@ -735,7 +745,7 @@ export default function App() {
         onCloseMobile={() => setMobileMenuOpen(false)}
       />
       <div className="flex-1 flex flex-col min-w-0 h-full overflow-hidden">
-        <Header warrantyNotifications={orders.filter(o=>o.parentOrderId&&o.estado==='Garantía').map(o=>({id:o.id,technician:o.tecnico?.nombre||'Por asignar'}))} onOpenWarranty={id=>setSelectedOrderForDrawer(orders.find(o=>o.id===id)||null)} shiftRole={shiftRole} onShiftRoleChange={role=>{setShiftRole(role);setActiveTab('dashboard');setViewMode(role==='tecnico'?'taller':'recepcion');}}
+        <Header whatsAppConfig={config} onWhatsAppModeChange={enabled=>handleSaveConfig({...config,whatsappAutoSend:enabled})} technicians={technicians} selectedTechnician={selectedTechnician} onTechnicianChange={setSelectedTechnician} warrantyNotifications={orders.filter(o=>o.parentOrderId&&o.estado==='Garantía').map(o=>({id:o.id,technician:o.tecnico?.nombre||'Por asignar'}))} onOpenWarranty={id=>setSelectedOrderForDrawer(orders.find(o=>o.id===id)||null)} shiftRole={shiftRole} onShiftRoleChange={role=>{setShiftRole(role);setActiveTab('dashboard');setViewMode(role==='tecnico'?'taller':'recepcion');}}
           globalSearch={globalSearch}
           setGlobalSearch={setGlobalSearch}
           onOpenNewOrder={openNewOrder}
@@ -767,7 +777,7 @@ export default function App() {
           {loading && <p role="status" className="text-sm text-zinc-400">Cargando datos del taller…</p>}
           {globalSearch.trim() && shiftRole!=='tecnico' && displayedOrders.filter(o=>warrantyActive(o)&&!o.parentOrderId).slice(0,5).map(o=><button key={o.id} onClick={()=>setSelectedOrderForDrawer(o)} className="block p-3 rounded bg-purple-950 text-purple-200">{o.id} · Registrar Reingreso por Garantía</button>)}
           {activeTab === 'dashboard' && (viewMode === 'taller' || shiftRole === 'tecnico') && (
-            <MobileWorkshopView
+            <MobileWorkshopView selectedTechnician={selectedTechnician} onSaveLocation={handleSaveLocation} onPrintLabel={setLabelOrder}
               orders={orders}
               searchQuery={globalSearch}
               onSearchChange={setGlobalSearch}
@@ -875,7 +885,8 @@ export default function App() {
           if (file) setReceptionPhoto(file);
         }}
       />
-      <DeviceDetailDrawer
+      {labelOrder&&<EquipmentLabelModal order={orders.find(o=>o.id===labelOrder.id)||labelOrder} config={config} onClose={()=>setLabelOrder(null)}/>}
+      <DeviceDetailDrawer onSaveLocation={handleSaveLocation} onPrintLabel={setLabelOrder}
         key={selectedOrderForDrawer?.id ?? 'closed'}
         order={liveDrawerOrder}
         isOpen={!!liveDrawerOrder}

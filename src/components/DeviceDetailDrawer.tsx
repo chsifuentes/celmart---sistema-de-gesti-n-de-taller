@@ -63,7 +63,10 @@ function EvidencePreview({ url, onClose }: { url: string; onClose: () => void })
 
 import { OrderOperations } from './OrderOperations';
 import type { PaymentMethod } from '../lib/operations';
+import {LocationControl} from './LocationControl';
 interface DeviceDetailDrawerProps {
+  onSaveLocation?: (id:string,value:string)=>Promise<void>;
+  onPrintLabel?: (order:Order)=>void;
   onPayment?: (id:string,method:PaymentMethod,amount:number)=>Promise<void>;
   onWarranty?: (id:string,reason:string)=>Promise<void>;
   order: Order | null;
@@ -81,6 +84,7 @@ interface DeviceDetailDrawerProps {
 }
 
 export const DeviceDetailDrawer: React.FC<DeviceDetailDrawerProps> = ({
+  onSaveLocation,onPrintLabel,
   onPayment,onWarranty,
   order,
   isOpen,
@@ -285,6 +289,7 @@ export const DeviceDetailDrawer: React.FC<DeviceDetailDrawerProps> = ({
           </div>
         </div>
 
+        <div className="px-5 py-3 space-y-2">{onSaveLocation&&<LocationControl order={order} onSave={onSaveLocation}/>} {onPrintLabel&&<button type="button" className="min-h-11 px-3 rounded border border-zinc-700" onClick={()=>onPrintLabel(order)}>🏷️ Imprimir Etiqueta de Equipo</button>}</div>
         {/* Status Quick Bar */}
         <div className="px-5 py-3 bg-[#111114] border-b border-zinc-800/80 flex items-center justify-between gap-4 shrink-0">
           <div className="flex items-center gap-2 text-xs">

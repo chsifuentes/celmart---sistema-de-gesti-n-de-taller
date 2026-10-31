@@ -1,8 +1,15 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Search, Plus, Bell, Command, CheckCircle2, AlertTriangle, ShieldCheck, X, LogOut, Lock, Menu } from 'lucide-react';
 
+import { WhatsAppConnectionControl } from './WhatsAppConnectionControl';
+import type { WorkshopConfig } from '../types';
 import type { ShiftRole } from '../lib/operations';
 interface HeaderProps {
+  whatsAppConfig?: WorkshopConfig;
+  onWhatsAppModeChange?: (enabled:boolean)=>Promise<void>;
+  technicians?: {nombre:string}[];
+  selectedTechnician?: string;
+  onTechnicianChange?: (name:string)=>void;
   warrantyNotifications?: {id:string; technician:string}[];
   onOpenWarranty?: (id:string)=>void;
   shiftRole?: ShiftRole;
@@ -19,6 +26,7 @@ interface HeaderProps {
 }
 
 export const Header: React.FC<HeaderProps> = ({
+  whatsAppConfig,onWhatsAppModeChange,technicians=[],selectedTechnician='',onTechnicianChange,
   warrantyNotifications = [], onOpenWarranty,
   shiftRole = 'administrador', onShiftRoleChange,
   globalSearch,
@@ -46,14 +54,18 @@ export const Header: React.FC<HeaderProps> = ({
   }, []);
 
   return (
-    <header className="border-b border-zinc-800/80 bg-[#161619] px-3 md:px-6 py-2.5 flex flex-col xl:flex-row xl:items-center justify-between gap-2.5 sticky top-0 z-20">
-      <label className="text-xs shrink-0">Perfil del turno<select aria-label="Perfil del turno" value={shiftRole} onChange={e=>onShiftRoleChange?.(e.target.value as ShiftRole)} className="block bg-zinc-800 p-2 rounded"><option value="recepcion">Recepción / Mostrador</option><option value="tecnico">Técnico Laboratorio</option><option value="administrador">Administrador</option></select></label>
+    <header className="border-b border-zinc-800/80 bg-[#161619] px-3 md:px-6 py-2.5 flex flex-wrap items-end gap-2.5 sticky top-0 z-20">
+      <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 flex-1 min-w-0 basis-full xl:basis-auto">
+      {whatsAppConfig&&onWhatsAppModeChange&&<WhatsAppConnectionControl config={whatsAppConfig} onModeChange={onWhatsAppModeChange}/>}
+      <label className="text-xs min-w-0">Técnico del turno<select aria-label="Técnico del turno" value={selectedTechnician} onChange={e=>onTechnicianChange?.(e.target.value)} className="block w-full bg-zinc-800 p-2 rounded"><option value="">Seleccionar técnico</option>{technicians.map(t=><option key={t.nombre} value={t.nombre}>{t.nombre}</option>)}</select></label>
+      <label className="text-xs min-w-0">Perfil del turno<select aria-label="Perfil del turno" value={shiftRole} onChange={e=>onShiftRoleChange?.(e.target.value as ShiftRole)} className="block w-full bg-zinc-800 p-2 rounded"><option value="recepcion">Recepción / Mostrador</option><option value="tecnico">Técnico Laboratorio</option><option value="administrador">Administrador</option></select></label>
+      </div>
       <div role="group" aria-label="Modo de operación" className="flex shrink-0 rounded-xl border border-zinc-700 bg-zinc-950 p-1">
         <button type="button" aria-pressed={viewMode === 'recepcion'} onClick={() => onViewModeChange('recepcion')} className={`min-h-11 flex-1 whitespace-nowrap px-3 rounded-lg text-xs font-semibold transition-colors ${viewMode === 'recepcion' ? 'bg-zinc-100 text-zinc-950' : 'text-zinc-400 hover:text-white'}`}>🖥️ Recepción</button>
         <button type="button" aria-pressed={viewMode === 'taller'} onClick={() => onViewModeChange('taller')} className={`min-h-11 flex-1 whitespace-nowrap px-3 rounded-lg text-xs font-semibold transition-colors ${viewMode === 'taller' ? 'bg-teal-400 text-zinc-950' : 'text-zinc-400 hover:text-white'}`}>📱 Modo Taller</button>
       </div>
       {/* Mobile Top Bar (Row 1 on mobile, Right side on desktop) */}
-      <div className="flex items-center justify-between gap-2 w-full xl:w-auto xl:order-3">
+      <div className="flex items-center justify-between gap-2 w-full order-first">
         {/* Left Mobile: Hamburger + Brand (Hidden on desktop) */}
         <div className="flex items-center gap-2 md:hidden">
           <button
@@ -163,7 +175,7 @@ export const Header: React.FC<HeaderProps> = ({
       </div>
 
       {/* Search Bar (Row 2 on mobile, Left side on desktop) */}
-      {viewMode === 'recepcion' && <div className="w-full xl:flex-1 xl:max-w-xl xl:order-2">
+      {viewMode === 'recepcion' && <div className="w-full">
         <div className="relative group w-full">
           <Search className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-zinc-400 group-focus-within:text-zinc-200 transition-colors" />
           <input

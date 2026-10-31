@@ -14,6 +14,7 @@ import {
   Sparkles,
   Copy
 } from 'lucide-react';
+import { WhatsAppConnectionControl } from './WhatsAppConnectionControl';
 import { WorkshopConfig, WhatsAppTemplateKey } from '../types';
 import { defaultWhatsAppTemplates, testWhatsAppConnection, validateWhatsAppApiUrl } from '../lib/whatsapp';
 
@@ -387,6 +388,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ config, onSaveConfig
             <MessageSquare className="w-4 h-4 text-emerald-400" />
             <h3 id="whatsapp-api-heading" className="text-sm font-semibold text-zinc-100">Automatización de WhatsApp</h3>
           </div>
+          <WhatsAppConnectionControl config={formData} onModeChange={enabled=>setFormData(previous=>({...previous,whatsappAutoSend:enabled}))}/>
+          <label className="block text-xs">Proveedor<select aria-label="Proveedor WhatsApp" value={formData.whatsappProvider||'webhook'} onChange={e=>setFormData(previous=>({...previous,whatsappProvider:e.target.value as 'webhook'|'evolution'}))} className="block bg-zinc-800 p-2"><option value="webhook">Webhook compatible existente</option><option value="evolution">Evolution API directo (servidor portátil)</option></select></label>
+          <p className="text-xs text-zinc-400">Evolution: URL base HTTPS del servidor e instancia conectada. Webhook: URL completa de envío. Tiempo máximo de respuesta: 1,5 s; respaldo wa.me.</p>
           <fieldset disabled={testingWhatsApp} className="space-y-4 disabled:opacity-70">
             <label className="flex items-start gap-3 rounded-lg border border-zinc-700/60 bg-[#111114] p-3 cursor-pointer">
               <input
@@ -404,7 +408,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ config, onSaveConfig
             </label>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
               <div className="sm:col-span-2">
-                <label htmlFor="whatsapp-api-url" className="block text-zinc-400 font-mono text-[11px] mb-1">URL DEL WEBHOOK DE ENVÍO</label>
+                <label htmlFor="whatsapp-api-url" className="block text-zinc-400 font-mono text-[11px] mb-1">URL DEL SERVIDOR / WEBHOOK</label>
                 <input
                   id="whatsapp-api-url"
                   type="url"
@@ -453,12 +457,12 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ config, onSaveConfig
               {testingWhatsApp ? <Loader2 className="w-4 h-4 animate-spin" /> : <MessageSquare className="w-4 h-4" />}
               {testingWhatsApp ? 'Comprobando...' : 'Comprobar conexión (sin enviar)'}
             </button>
-            <p className="text-[11px] text-zinc-500">Comprueba acceso con HEAD. No envía mensajes ni confirma su entrega.</p>
+            <p className="text-[11px] text-zinc-500">{formData.whatsappProvider==='evolution'?'Comprueba que la instancia esté conectada a WhatsApp.':'Comprueba acceso HTTP con HEAD.'} No envía mensajes ni confirma su entrega.</p>
           </div>
           {whatsappConnection && (
             <p role="status" className={`rounded-lg border p-3 text-xs ${whatsappConnection.reachable ? 'border-emerald-800/60 bg-emerald-950/30 text-emerald-300' : 'border-amber-800/60 bg-amber-950/30 text-amber-300'}`}>
               {whatsappConnection.reachable
-                ? `El webhook respondió HTTP ${whatsappConnection.status} a la comprobación HEAD. Esto no confirma autorización para enviar ni entrega de mensajes.`
+                ? `Conexión comprobada (HTTP ${whatsappConnection.status}). Esto no confirma la entrega de mensajes.`
                 : whatsappConnection.error}
             </p>
           )}

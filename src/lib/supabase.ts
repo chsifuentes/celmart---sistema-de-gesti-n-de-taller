@@ -206,6 +206,7 @@ export function createMockSupabaseClient() {
       if (tableName === 'ordenes') {
         return {
           ...row,
+          estado_actualizado_at: !previous || row.estado!==previous.estado ? new Date().toISOString() : previous.estado_actualizado_at ?? null,
           entregado_at: previous?.entregado_at ?? (
             row.estado === 'Entregado' && (!previous || previous.estado !== 'Entregado') ? new Date().toISOString() : null
           ),
@@ -516,7 +517,7 @@ export function createMockSupabaseClient() {
             const elapsed=Date.now()-Date.parse(o.entregado_at);if(o.estado!=='Entregado'||!Number.isFinite(elapsed)||elapsed<0||elapsed>=o.garantia_dias*86400000||o.parent_order_id)throw new Error('Garantía no vigente');
             if(String(args.p_motivo||'').trim().length<3)throw new Error('Indica motivo');
             const n=Math.max(0,...tables.ordenes.filter(c=>c.parent_order_id===o.id).map(c=>Number(c.id.split('-G').pop())))+1;
-            const child={...clone(o),id:o.id+'-G'+n,parent_order_id:o.id,motivo_garantia:args.p_motivo,estado:'Garantía',entregado_at:null,metodo_pago:null,monto_cobrado:null,costo_mano_obra:0,total_estimado:0,repuestos_asignados:[],fotos_evidencia:[],checklist_json:{},falla_declarada:args.p_motivo,created_at:new Date().toISOString(),notas_tecnicas:[{id:crypto.randomUUID(),autor:'Recepción',contenido:'Reingreso asignado a '+(o.tecnico_nombre||'Por asignar')+': '+args.p_motivo,fecha:new Date().toISOString(),tipo:'general'}]};tables.ordenes.unshift(child);persistTables();notify({eventType:'INSERT',schema:'public',table:'ordenes',new:child,old:{}});return {data:clone(child),error:null};
+            const child={...clone(o),id:o.id+'-G'+n,parent_order_id:o.id,motivo_garantia:args.p_motivo,estado:'Garantía',estado_actualizado_at:new Date().toISOString(),ubicacion_fisica:null,entregado_at:null,metodo_pago:null,monto_cobrado:null,costo_mano_obra:0,total_estimado:0,repuestos_asignados:[],fotos_evidencia:[],checklist_json:{},falla_declarada:args.p_motivo,created_at:new Date().toISOString(),notas_tecnicas:[{id:crypto.randomUUID(),autor:'Recepción',contenido:'Reingreso asignado a '+(o.tecnico_nombre||'Por asignar')+': '+args.p_motivo,fecha:new Date().toISOString(),tipo:'general'}]};tables.ordenes.unshift(child);persistTables();notify({eventType:'INSERT',schema:'public',table:'ordenes',new:child,old:{}});return {data:clone(child),error:null};
           }
           const i=tables.inventario.find(i=>i.sku===args.p_sku);if(!i||!Number.isInteger(args.p_cantidad)||args.p_cantidad<=0||i.stock_actual<args.p_cantidad||o.estado==='Entregado')throw new Error('Stock insuficiente o cantidad inválida');
           if(tables.cortes_caja.some(c=>c.fecha===day()))throw new Error('Caja cerrada');

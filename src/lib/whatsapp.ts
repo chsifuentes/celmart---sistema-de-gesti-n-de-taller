@@ -166,94 +166,74 @@ function whatsappApiHeaders(config: WorkshopConfig): Record<string, string> {
   };
 }
 
-const API_TIMEOUT_MS = 10_000;
+export const WHATSAPP_TIMEOUT_MS = 1500;
 
-/**
- * Contract for an adapter/webhook connected to Evolution API, WAHA or Cloud API.
- * A 2xx response means accepted by the endpoint, never confirmed phone delivery.
- * This function does not retry: an interrupted response can still have been sent.
- */
-export async function sendAutomatedWhatsApp(
-  order: Order,
-  message: string,
-  config: WorkshopConfig,
-): Promise<{ sentViaApi: boolean; error?: string }> {
+/** Deadline still resolves when an intermediary ignores AbortSignal. No retries. */
+export async function withWhatsAppDeadline<T>(run: (signal: AbortSignal) => Promise<T>): Promise<T> {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout>;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      controller.abort();
+      reject(new DOMException('Tiempo de espera agotado (1.5 s)', 'TimeoutError'));
+    }, WHATSAPP_TIMEOUT_MS);
+  });
+  try { return await Promise.race([run(controller.signal), deadline]); }
+  finally { clearTimeout(timer!); }
+}
+
+export function evolutionEndpoint(config: WorkshopConfig, route: 'send' | 'state'): string {
+  const base = (config.whatsappApiUrl || '').trim().replace(/\/+$/, '');
+  const instance = encodeURIComponent(config.whatsappInstancia?.trim() || '');
+  return `${base}/${route === 'send' ? 'message/sendText' : 'instance/connectionState'}/${instance}`;
+}
+
+export async function sendAutomatedWhatsApp(order: Order, message: string, config: WorkshopConfig): Promise<{ sentViaApi: boolean; error?: string }> {
   if (!config.whatsappAutoSend || !config.whatsappApiUrl?.trim()) return { sentViaApi: false };
   const urlError = validateWhatsAppApiUrl(config.whatsappApiUrl);
   if (urlError) return { sentViaApi: false, error: urlError };
-  if (!isValidWhatsAppPhone(order.cliente.telefono)) {
-    return { sentViaApi: false, error: 'El teléfono del cliente no tiene un formato válido para WhatsApp.' };
-  }
+  if (!isValidWhatsAppPhone(order.cliente.telefono)) return { sentViaApi: false, error: 'El teléfono del cliente no tiene un formato válido para WhatsApp.' };
   if (!message.trim()) return { sentViaApi: false, error: 'El mensaje de WhatsApp está vacío.' };
-
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), API_TIMEOUT_MS);
+  if (config.whatsappProvider === 'evolution' && !config.whatsappInstancia?.trim()) return { sentViaApi: false, error: 'Configura la instancia de Evolution API.' };
   try {
-    const response = await fetch(config.whatsappApiUrl.trim(), {
-      method: 'POST',
-      headers: { ...whatsappApiHeaders(config), 'Content-Type': 'application/json' },
-      credentials: 'omit',
-      redirect: 'error',
-      signal: controller.signal,
-      body: JSON.stringify({
-        phone: formatWhatsAppPhone(order.cliente.telefono),
-        message,
-        orderId: order.id,
-        instance: config.whatsappInstancia?.trim(),
-        mediaUrls: order.fotosEvidencia ?? [],
-      }),
-    });
-    if (!response.ok) {
-      return { sentViaApi: false, error: `El webhook respondió HTTP ${response.status}. Revisa la configuración antes de enviar manualmente.` };
-    }
+    const evolution = config.whatsappProvider === 'evolution';
+    const response = await withWhatsAppDeadline(signal => fetch(evolution ? evolutionEndpoint(config, 'send') : config.whatsappApiUrl!.trim(), {
+      method: 'POST', headers: { ...whatsappApiHeaders(config), 'Content-Type': 'application/json' },
+      credentials: 'omit', redirect: 'error', signal,
+      body: JSON.stringify(evolution
+        ? { number: formatWhatsAppPhone(order.cliente.telefono), text: message }
+        : { phone: formatWhatsAppPhone(order.cliente.telefono), message, orderId: order.id, instance: config.whatsappInstancia?.trim(), mediaUrls: order.fotosEvidencia ?? [] }),
+    }));
+    if (!response.ok) return { sentViaApi: false, error: `El webhook respondió HTTP ${response.status}. Continúa con WhatsApp manual.` };
     return { sentViaApi: true };
-  } catch {
-    return {
-      sentViaApi: false,
-      error: controller.signal.aborted
-        ? 'La API agotó el tiempo de espera. No se confirmó el envío; revisa WhatsApp antes de reenviar.'
-        : 'No se confirmó la respuesta de la API. Revisa la conexión, CORS y WhatsApp antes de reenviar.',
-    };
-  } finally {
-    clearTimeout(timeout);
+  } catch (error) {
+    return { sentViaApi: false, error: error instanceof DOMException && ['TimeoutError','AbortError'].includes(error.name)
+      ? 'La API agotó el tiempo de espera (1.5 s). No se confirmó el envío; revisa WhatsApp antes de reenviar.'
+      : 'No se confirmó la respuesta de la API. Revisa la conexión, CORS y WhatsApp antes de reenviar.' };
   }
 }
 
-/** Connectivity-only check: HEAD never sends a message to a customer. */
-export async function testWhatsAppConnection(
-  config: WorkshopConfig,
-): Promise<{ reachable: boolean; status?: number; error?: string }> {
+/** Evolution verifies the linked instance; a generic webhook probe verifies HTTP only. */
+export async function testWhatsAppConnection(config: WorkshopConfig): Promise<{ reachable: boolean; status?: number; error?: string }> {
   const urlError = validateWhatsAppApiUrl(config.whatsappApiUrl ?? '');
   if (urlError) return { reachable: false, error: urlError };
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), API_TIMEOUT_MS);
+  const evolution = config.whatsappProvider === 'evolution';
+  if (evolution && !config.whatsappInstancia?.trim()) return { reachable: false, error: 'Configura la instancia de Evolution API.' };
   try {
-    const response = await fetch(config.whatsappApiUrl!.trim(), {
-      method: 'HEAD',
-      headers: whatsappApiHeaders(config),
-      credentials: 'omit',
-      redirect: 'error',
-      cache: 'no-store',
-      signal: controller.signal,
+    return await withWhatsAppDeadline(async signal => {
+      const response = await fetch(evolution ? evolutionEndpoint(config, 'state') : config.whatsappApiUrl!.trim(), {
+        method: evolution ? 'GET' : 'HEAD', headers: whatsappApiHeaders(config), credentials: 'omit', redirect: 'error', cache: 'no-store', signal,
+      });
+      if (!response.ok) return { reachable: false, status: response.status, error: response.status === 405
+        ? 'El servidor respondió HTTP 405: esta ruta no admite HEAD. No se envió ningún mensaje.' : `El servidor respondió HTTP ${response.status}.` };
+      if (evolution) {
+        const data: unknown = await response.json();
+        const state = (data as { instance?: { state?: string } })?.instance?.state;
+        if (state !== 'open') return { reachable: false, status: response.status, error: 'La instancia no está conectada a WhatsApp. Conecta su QR en Evolution.' };
+      }
+      return { reachable: true, status: response.status };
     });
-    if (!response.ok) {
-      return {
-        reachable: false,
-        status: response.status,
-        error: response.status === 405
-          ? 'El servidor respondió HTTP 405: esta ruta no admite HEAD. No se envió ningún mensaje ni se validó el envío.'
-          : `El servidor respondió HTTP ${response.status}. No se envió ningún mensaje.`,
-      };
-    }
-    return { reachable: true, status: response.status };
   } catch {
-    return {
-      reachable: false,
-      error: controller.signal.aborted
-        ? 'El servidor no respondió dentro de 10 segundos. No se envió ningún mensaje.'
-        : 'No se pudo comprobar la conexión desde este navegador. Revisa la URL, la red y CORS. No se envió ningún mensaje.',
-    };
-  } finally {
-    clearTimeout(timeout);
+    return { reachable: false, error: 'No hubo respuesta en 1.5 s o falló la conexión/CORS. Disponible el modo manual wa.me.' };
   }
 }

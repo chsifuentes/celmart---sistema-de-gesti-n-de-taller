@@ -21,6 +21,7 @@ export function normalizeWorkshopConfig(value: unknown): WorkshopConfig {
   for (const key of ['whatsappApiUrl', 'whatsappApiKey', 'whatsappInstancia', 'mensajeWhatsAppPlantilla'] as const) {
     if (typeof source[key] === 'string') result[key] = source[key];
   }
+  result.whatsappProvider = source.whatsappProvider === 'evolution' ? 'evolution' : 'webhook';
   result.whatsappAutoSend = source.whatsappAutoSend === true;
   if (!['80mm', '58mm'].includes(result.anchoTicket)) result.anchoTicket = initialWorkshopConfig.anchoTicket;
   if (!['USB - Impresora Térmica 80mm', 'Bluetooth - POS-80', 'Red LAN - Thermal-01'].includes(result.impresoraDefecto)) {

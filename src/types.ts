@@ -138,6 +138,9 @@ export interface Order {
   garantiaDias: number;
   fechaEntregaEstimada?: string;
   fechaEntrega?: string;
+  fechaIngreso?: string;
+  estadoActualizadoAt?: string;
+  ubicacionFisica?: string;
   metodoPago?: 'Efectivo' | 'Transferencia';
   montoCobrado?: number;
   parentOrderId?: string;
@@ -220,6 +223,7 @@ export interface WorkshopConfig {
   whatsappApiKey?: string;
   whatsappInstancia?: string;
   whatsappAutoSend?: boolean;
+  whatsappProvider?: 'webhook' | 'evolution';
   plantillasWhatsApp: WhatsAppTemplates;
   simboloMoneda: string;
   tasaIva: number;

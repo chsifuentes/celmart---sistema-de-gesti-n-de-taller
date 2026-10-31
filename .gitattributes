@@ -1,2 +1,4 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+whatsapp-server/*.sh text eol=lf
+whatsapp-server/*.bat text eol=crlf

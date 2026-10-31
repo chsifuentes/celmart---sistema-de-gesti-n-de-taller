@@ -55,7 +55,7 @@ Se envía la clave configurada en `apikey` y `Authorization: Bearer …`. La URL
 
 Con la automatización activada, las altas y los cambios de estado guardados por esta sesión generan una solicitud en segundo plano. La entrega ofrece su propio botón de comprobante final y garantía, evitando un segundo aviso genérico. Recibir un evento Realtime no vuelve a enviar mensajes. Una respuesta 2xx se registra como **aceptación por API**, sin afirmar entrega al teléfono. El modal de WhatsApp también utiliza el mismo servicio con el texto editado por el usuario.
 
-Si la API falla o tarda más de 10 segundos, queda disponible el mensaje con fallback manual. El modal reserva la pestaña durante el toque y, si el navegador la bloquea, ofrece un enlace `wa.me` explícito. No hay reintentos automáticos de envío porque una respuesta interrumpida puede haber sido aceptada por el proveedor. Revisa WhatsApp antes de reenviar un mensaje cuyo resultado sea incierto.
+Si la API falla o tarda más de 1.5 segundos, queda disponible el mensaje con fallback manual. El modal reserva la pestaña durante el toque y, si el navegador la bloquea, ofrece un enlace `wa.me` explícito. No hay reintentos automáticos de envío porque una respuesta interrumpida puede haber sido aceptada por el proveedor. Revisa WhatsApp antes de reenviar un mensaje cuyo resultado sea incierto.
 
 ## Fase 3: configuración global, seguimiento, QR y PWA
 
@@ -83,3 +83,13 @@ Asignar una pieza desde la orden descuenta stock, guarda su costo de compra de e
 Para una garantía, buscar el folio original, abrir la ficha y escribir el motivo. La vigencia se verifica nuevamente en servidor, desde la entrega y sus días de garantía. Se crea OS-XXXX-G1/G2 sin modificar el cobro original, con mano de obra cero y asignación al técnico anterior. La nota, el distintivo púrpura, la alerta de cabecera y Realtime notifican el reingreso dentro del taller; no se envían mensajes externos al técnico. La garantía no se renueva a través de subórdenes encadenadas.
 
 El selector de perfil adapta la interfaz: técnico sin reportes globales ni costos de compra; recepción con órdenes/cobros; administrador con configuración, inventario completo y corte. Son perfiles operativos intercambiables del turno, no autenticación RBAC ni una frontera de autorización frente a un usuario autenticado que llame directamente a la API. Supabase conserva acceso autenticado compartido del único taller; anónimos no acceden a caja, consumos ni datos internos. Para credenciales personales con elevación protegida se requiere asignación de roles en servidor, distinta de este selector rápido.
+
+## Mesa de trabajo, servidor portátil y etiquetas
+
+Ejecutar `supabase_phase5.sql` después de las migraciones anteriores. Guarda `ubicacion_fisica` y `estado_actualizado_at` en órdenes. La fecha de estado es autoritativa y sólo cambia al cambiar de estado; notas, fotos y ubicaciones no reinician la alerta de 48 h. No se inventan fechas de estado para órdenes históricas. El ingreso utiliza `created_at` real.
+
+Seleccionar **Técnico del turno** en cabecera y activar **Mis Equipos Asignados** en Modo Taller. La selección es explícita por turno: no se deduce la identidad a partir de un correo ni del selector de rol. La ubicación se edita desde tarjeta o expediente y se sincroniza por Realtime.
+
+**Imprimir Etiqueta de Equipo** abre la vista de 50×30mm/58mm, con QR SVG local, folio/fecha, modelo/cliente, ubicación y PIN/patrón. La etiqueta es de uso físico interno del taller: el QR público sigue excluyendo las claves y ubicaciones. El tamaño 50×30mm puede recortar textos largos; 58 mm admite su contenido completo. Usar escala 100 % y el papel correcto en el controlador térmico.
+
+WhatsApp dispone de modo compartido Automático/Manual en cabecera y Configuraciones, con comprobación periódica y límite de respuesta de 1,5 s. El servidor y las instrucciones para trasladar la sesión están en `whatsapp-server/README.md`. Requiere Docker en la PC elegida; no forma parte del alojamiento estático de Vercel. Si se usa Evolution directo, la URL es la base HTTPS, no la ruta de envío. Los webhooks previos siguen funcionando con su contrato original.

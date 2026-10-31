@@ -1,12 +1,17 @@
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { ArrowRight, Camera, CheckCheck, ClipboardList, FilePenLine, Inbox, LoaderCircle, LockKeyhole, MessageCircle, Search, Wrench, X } from 'lucide-react';
 import type { Order, OrderStatus, TechNote, WhatsAppTemplateKey } from '../types';
 import { uploadWorkshopPhoto } from '../lib/imageStorage';
 import { determineTemplateKeyForStatus } from '../lib/whatsapp';
 
+import {assignedTo,orderTiming} from '../lib/workbench';
+import {LocationControl} from './LocationControl';
 export type WorkshopLane = 'cola' | 'mesa' | 'listos';
 
 export interface MobileWorkshopViewProps {
+  selectedTechnician?: string;
+  onSaveLocation?: (id:string,value:string)=>Promise<void>;
+  onPrintLabel?: (order:Order)=>void;
   orders: Order[];
   searchQuery: string;
   onSearchChange: (value: string) => void;
@@ -98,13 +103,14 @@ function UnlockPattern({ points }: { points: number[] }) {
   );
 }
 
-type OrderCardProps = Pick<MobileWorkshopViewProps, 'onSelectOrder' | 'onUpdateStatus' | 'onAddPhoto' | 'onAddNote' | 'onOpenWhatsApp'> & {
+type OrderCardProps = Pick<MobileWorkshopViewProps, 'onSelectOrder' | 'onUpdateStatus' | 'onAddPhoto' | 'onAddNote' | 'onOpenWhatsApp' | 'onSaveLocation' | 'onPrintLabel'> & {
+  now: Date;
   order: Order;
   onStatusChanged: (message: string) => void;
 };
 
 // Defined outside the view so live order updates preserve open notes and camera state.
-function WorkshopOrderCard({ order, onSelectOrder, onUpdateStatus, onAddPhoto, onAddNote, onOpenWhatsApp, onStatusChanged }: OrderCardProps) {
+function WorkshopOrderCard({ now,onSaveLocation,onPrintLabel,order, onSelectOrder, onUpdateStatus, onAddPhoto, onAddNote, onOpenWhatsApp, onStatusChanged }: OrderCardProps) {
   const [pending, setPending] = useState<'photo' | 'note' | 'status' | null>(null);
   const [error, setError] = useState('');
   const [feedback, setFeedback] = useState('');
@@ -116,6 +122,7 @@ function WorkshopOrderCard({ order, onSelectOrder, onUpdateStatus, onAddPhoto, o
   const actions = getWorkshopActions(order.estado);
   const photos = order.fotosEvidencia || [];
   const isReady = order.estado === 'Listo';
+  const timing=orderTiming(order,now);
 
   const runAction = async (kind: 'photo' | 'note' | 'status', action: () => Promise<void>, successMessage: string) => {
     if (busy.current) return false;
@@ -178,6 +185,9 @@ function WorkshopOrderCard({ order, onSelectOrder, onUpdateStatus, onAddPhoto, o
         </button>
 
         {(order.parentOrderId || order.estado==='Garantía') && <span className="inline-block bg-purple-900 text-purple-200 px-3 py-1 rounded-full text-xs">Garantía Activa · {order.parentOrderId || order.id}</span>}
+        <p className={timing.stale?'text-amber-300 font-semibold':'text-xs text-zinc-400'}>{timing.label}{timing.stale?' · ⚠ Más de 48 h sin cambio de estado':''}{timing.statusUnknown?' · Estado sin fecha verificable':''}</p>
+        {onSaveLocation&&<LocationControl order={order} onSave={onSaveLocation}/>}
+        {onPrintLabel&&<button type="button" onClick={()=>onPrintLabel(order)} className="min-h-11 w-full border border-zinc-700 rounded px-2">🏷️ Imprimir Etiqueta de Equipo</button>}
         <p className="text-base leading-relaxed text-zinc-200 break-words">{order.fallaDeclarada || 'Revisar falla con recepción.'}</p>
 
         <div className="rounded-xl bg-black/25 border border-zinc-800 p-3 flex items-center gap-3">
@@ -248,10 +258,14 @@ const LANES = [
   { id: 'listos' as const, label: 'Listos', icon: CheckCheck, empty: 'Los equipos listos para entregar aparecerán aquí.' },
 ];
 
-export function MobileWorkshopView({ orders, searchQuery, onSearchChange, onReceiveExpress, lastDeliveredOrder, onDeliveryReceipt, ...cardActions }: MobileWorkshopViewProps) {
+export function MobileWorkshopView({ selectedTechnician='',orders, searchQuery, onSearchChange, onReceiveExpress, lastDeliveredOrder, onDeliveryReceipt, ...cardActions }: MobileWorkshopViewProps) {
+  const [mineOnly,setMineOnly]=useState(false);
+  const [now,setNow]=useState(()=>new Date());
+  useEffect(()=>{const timer=setInterval(()=>setNow(new Date()),60000);return()=>clearInterval(timer);},[]);
+  const assignedOrders=mineOnly?orders.filter(o=>assignedTo(o,selectedTechnician)):orders;
   const [activeLane, setActiveLane] = useState<WorkshopLane>('cola');
   const [statusNotice, setStatusNotice] = useState('');
-  const lanes = LANES.map((lane) => ({ ...lane, orders: filterWorkshopOrders(orders, lane.id, searchQuery) }));
+  const lanes = LANES.map((lane) => ({ ...lane, orders: filterWorkshopOrders(assignedOrders, lane.id, searchQuery) }));
   const currentLane = lanes.find((lane) => lane.id === activeLane)!;
   const visibleIds = new Set(currentLane.orders.map((order) => order.id));
   const activeOrders = orders.filter((order) => getWorkshopLane(order.estado) !== null)
@@ -277,6 +291,8 @@ export function MobileWorkshopView({ orders, searchQuery, onSearchChange, onRece
         {searchQuery && <button type="button" onClick={() => onSearchChange('')} aria-label="Limpiar búsqueda" className="absolute right-1 top-1 w-11 h-11 text-zinc-400 flex items-center justify-center rounded-lg"><X className="w-5 h-5" /></button>}
       </div>
 
+      <button type="button" aria-pressed={mineOnly} onClick={()=>setMineOnly(!mineOnly)} className="min-h-12 w-full rounded-xl border border-zinc-600 px-3">Mis Equipos Asignados {mineOnly?'✓':''}</button>
+      {mineOnly&&!selectedTechnician&&<p role="status" className="text-amber-300">Selecciona el técnico del turno en la cabecera para ver sus equipos.</p>}
       <div className="grid grid-cols-3 gap-2" role="group" aria-label="Colas de trabajo">
         {lanes.map(({ id, label, icon: Icon, orders: laneOrders }) => (
           <button key={id} type="button" onClick={() => setActiveLane(id)} aria-pressed={activeLane === id} className={`min-h-16 px-2 py-2 rounded-xl flex flex-col items-center justify-center gap-1 text-sm font-semibold border ${activeLane === id ? 'bg-zinc-100 text-zinc-950 border-zinc-100' : 'bg-[#17171b] text-zinc-400 border-zinc-700 active:bg-zinc-800'}`}>
@@ -306,7 +322,7 @@ export function MobileWorkshopView({ orders, searchQuery, onSearchChange, onRece
             preserve note drafts, camera inputs and in-flight save guards/errors. */}
         {activeOrders.map((order) => (
           <div key={order.id} hidden={!visibleIds.has(order.id)} className="min-w-0">
-            <WorkshopOrderCard order={order} {...cardActions} onStatusChanged={setStatusNotice} />
+            <WorkshopOrderCard now={now} order={order} {...cardActions} onStatusChanged={setStatusNotice} />
           </div>
         ))}
       </div>

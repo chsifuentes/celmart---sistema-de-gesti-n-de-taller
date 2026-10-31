@@ -6,3 +6,6 @@ coverage/
 *.log
 .env*
 !.env.example
+
+whatsapp-server/sesion_whatsapp/
+whatsapp-server/.env
