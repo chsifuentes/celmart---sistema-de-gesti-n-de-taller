@@ -38,12 +38,11 @@ import { cacheWorkshopConfig, loadSharedWorkshopConfig, readWorkshopConfigCache,
 
 import { CashRegisterView } from './components/CashRegisterView';
 import { warrantyActive } from './lib/operations';
-import type { ShiftRole, PaymentMethod } from './lib/operations';
+import type { PaymentMethod } from './lib/operations';
 import {EquipmentLabelModal} from './components/EquipmentLabelModal';
 export default function App() {
   const [labelOrder,setLabelOrder]=useState<Order|null>(null);
   const [selectedTechnician,setSelectedTechnician]=useState('');
-  const [shiftRole,setShiftRole]=useState<ShiftRole>('recepcion');
   // Auth State
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
 
@@ -588,7 +587,6 @@ export default function App() {
     applySavedOrder(mapOrderRow(data));
   };
   const handlePayment=async(id:string,method:PaymentMethod,amount:number)=>{
-    if(shiftRole==='tecnico') throw new Error('Cambia al perfil de Recepción para registrar cobros.');
     if(!Number.isFinite(amount)||amount<0)throw new Error('Importe inválido');
     const {data,error}=await supabase.from('ordenes').update({metodo_pago:method,monto_cobrado:amount}).eq('id',id).select('*').single();
     if(error)throw new Error(error.message);applySavedOrder(mapOrderRow(data));
@@ -730,7 +728,7 @@ export default function App() {
 
   return (
     <div className="flex h-dvh w-full bg-[#0c0c0e] text-zinc-100 overflow-hidden font-sans select-text">
-      <Sidebar administrator={shiftRole==='administrador'}
+      <Sidebar
         activeTab={activeTab}
         setActiveTab={(tab) => {
           setActiveTab(tab);
@@ -745,7 +743,7 @@ export default function App() {
         onCloseMobile={() => setMobileMenuOpen(false)}
       />
       <div className="flex-1 flex flex-col min-w-0 h-full overflow-hidden">
-        <Header whatsAppConfig={config} onWhatsAppModeChange={enabled=>handleSaveConfig({...config,whatsappAutoSend:enabled})} technicians={technicians} selectedTechnician={selectedTechnician} onTechnicianChange={setSelectedTechnician} warrantyNotifications={orders.filter(o=>o.parentOrderId&&o.estado==='Garantía').map(o=>({id:o.id,technician:o.tecnico?.nombre||'Por asignar'}))} onOpenWarranty={id=>setSelectedOrderForDrawer(orders.find(o=>o.id===id)||null)} shiftRole={shiftRole} onShiftRoleChange={role=>{setShiftRole(role);setActiveTab('dashboard');setViewMode(role==='tecnico'?'taller':'recepcion');}}
+        <Header warrantyNotifications={orders.filter(o=>o.parentOrderId&&o.estado==='Garantía').map(o=>({id:o.id,technician:o.tecnico?.nombre||'Por asignar'}))} onOpenWarranty={id=>setSelectedOrderForDrawer(orders.find(o=>o.id===id)||null)}
           globalSearch={globalSearch}
           setGlobalSearch={setGlobalSearch}
           onOpenNewOrder={openNewOrder}
@@ -775,9 +773,9 @@ export default function App() {
             </div>
           )}
           {loading && <p role="status" className="text-sm text-zinc-400">Cargando datos del taller…</p>}
-          {globalSearch.trim() && shiftRole!=='tecnico' && displayedOrders.filter(o=>warrantyActive(o)&&!o.parentOrderId).slice(0,5).map(o=><button key={o.id} onClick={()=>setSelectedOrderForDrawer(o)} className="block p-3 rounded bg-purple-950 text-purple-200">{o.id} · Registrar Reingreso por Garantía</button>)}
-          {activeTab === 'dashboard' && (viewMode === 'taller' || shiftRole === 'tecnico') && (
-            <MobileWorkshopView selectedTechnician={selectedTechnician} onSaveLocation={handleSaveLocation} onPrintLabel={setLabelOrder}
+          {globalSearch.trim() && activeTab === 'dashboard' && displayedOrders.filter(o=>warrantyActive(o)&&!o.parentOrderId).slice(0,5).map(o=><button key={o.id} onClick={()=>setSelectedOrderForDrawer(o)} className="block px-3 py-2 rounded-md border border-zinc-800/80 bg-[#161619] text-xs text-zinc-300">{o.id} · Registrar Reingreso por Garantía</button>)}
+          {activeTab === 'dashboard' && viewMode === 'taller' && (
+            <MobileWorkshopView technicians={technicians} onTechnicianChange={setSelectedTechnician} selectedTechnician={selectedTechnician} onSaveLocation={handleSaveLocation} onPrintLabel={setLabelOrder}
               orders={orders}
               searchQuery={globalSearch}
               onSearchChange={setGlobalSearch}
@@ -791,9 +789,9 @@ export default function App() {
               onDeliveryReceipt={(order) => { void handleDeliveryReceipt(order); }}
             />
           )}
-          {activeTab === 'dashboard' && viewMode === 'recepcion' && shiftRole !== 'tecnico' && (
+          {activeTab === 'dashboard' && viewMode === 'recepcion' && (
             <div className="space-y-6 animate-in fade-in duration-150">
-              {shiftRole==='administrador' && <MetricCards orders={orders} onSelectFilter={(st) => setTableStatusFilter(st)} />}
+              <MetricCards orders={orders} onSelectFilter={(st) => setTableStatusFilter(st)} />
               <div className="grid grid-cols-1 lg:grid-cols-3 xl:grid-cols-4 gap-6">
                 <div className="lg:col-span-2 xl:col-span-3">
                   <OrdersTable
@@ -836,9 +834,8 @@ export default function App() {
               />
             </div>
           )}
-          {activeTab === 'inventario' && shiftRole!=='administrador' && <div className="grid gap-3">{inventory.map(item=><article key={item.id} className="p-4 bg-zinc-900 rounded-xl"><strong>{item.nombre}</strong><p>{item.sku} · Stock {item.stockActual}</p><p>Precio de venta: ${item.precioVenta}</p></article>)}</div>}
-          {activeTab === 'caja' && shiftRole==='administrador' && <CashRegisterView width={config.anchoTicket}/>}
-          {activeTab === 'inventario' && shiftRole==='administrador' && (
+          {activeTab === 'caja' && <CashRegisterView width={config.anchoTicket}/>}
+          {activeTab === 'inventario' && (
             <div className="animate-in fade-in duration-150">
               <InventoryView
                 inventory={inventory}
@@ -849,12 +846,12 @@ export default function App() {
               />
             </div>
           )}
-          {activeTab === 'reportes' && shiftRole==='administrador' && (
+          {activeTab === 'reportes' && (
             <div className="animate-in fade-in duration-150">
               <ReportsView orders={orders} inventory={inventory} />
             </div>
           )}
-          {activeTab === 'configuraciones' && shiftRole==='administrador' && (
+          {activeTab === 'configuraciones' && (
             <div className="animate-in fade-in duration-150">
               <SettingsView config={config} onSaveConfig={handleSaveConfig} />
             </div>
@@ -894,7 +891,7 @@ export default function App() {
         onUpdateStatus={handleUpdateOrderStatus}
         autoWhatsApp={Boolean(config.whatsappAutoSend && config.whatsappApiUrl?.trim())}
         onAddNote={handleAddNoteToOrder}
-        onPayment={shiftRole==='tecnico'?undefined:handlePayment}
+        onPayment={handlePayment}
         onWarranty={handleWarranty}
         onAssignPart={handleAssignPartToOrder}
         onAddPhoto={handleAddPhotoToOrder}

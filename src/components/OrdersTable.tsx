@@ -242,7 +242,7 @@ export const OrdersTable: React.FC<OrdersTableProps> = ({
                   onClick={() => onSelectOrder(order)}
                 >
                   {/* ID */}
-                  <td className="py-3.5 px-4 font-mono font-medium">
+                  <td className="py-3.5 px-4 font-mono font-medium whitespace-nowrap">
                     <div className="flex items-center gap-1.5">
                       {order.prioridadUrgente ? (
                         <span className="w-1.5 h-1.5 rounded-full bg-rose-500" title="Urgente" />
@@ -256,7 +256,7 @@ export const OrdersTable: React.FC<OrdersTableProps> = ({
                   </td>
 
                   {/* CLIENTE */}
-                  <td className="py-3.5 px-4">
+                  <td className="py-3.5 px-4 whitespace-nowrap">
                     <div className="flex flex-col">
                       <span className="font-semibold text-zinc-100 group-hover:text-white transition-colors">
                         {order.cliente.nombre}
@@ -268,7 +268,7 @@ export const OrdersTable: React.FC<OrdersTableProps> = ({
                   </td>
 
                   {/* DISPOSITIVO */}
-                  <td className="py-3.5 px-4">
+                  <td className="py-3.5 px-4 whitespace-nowrap">
                     <div className="flex items-start gap-2.5">
                       {getDeviceIcon(order.dispositivo.modelo, order.dispositivo.marca)}
                       <div className="flex flex-col">
@@ -283,7 +283,7 @@ export const OrdersTable: React.FC<OrdersTableProps> = ({
                   </td>
 
                   {/* ESTADO (with subtle pill & quick switch) */}
-                  <td className="py-3.5 px-4" onClick={(e) => e.stopPropagation()}>
+                  <td className="py-3.5 px-4 whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
                     <div className="relative inline-block">
                       <button
                         onClick={() => setOpenStatusDropdownId(openStatusDropdownId === order.id ? null : order.id)}

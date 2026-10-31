@@ -1,209 +1,235 @@
-import React, { useState, useRef, useEffect } from 'react';
-import { Search, Plus, Bell, Command, CheckCircle2, AlertTriangle, ShieldCheck, X, LogOut, Lock, Menu } from 'lucide-react';
+import React, { useEffect, useRef, useState } from 'react';
+import {
+  AlertTriangle,
+  Bell,
+  Command,
+  LogOut,
+  Menu,
+  Monitor,
+  Plus,
+  Search,
+  Smartphone,
+  X,
+} from 'lucide-react';
 
-import { WhatsAppConnectionControl } from './WhatsAppConnectionControl';
-import type { WorkshopConfig } from '../types';
-import type { ShiftRole } from '../lib/operations';
 interface HeaderProps {
-  whatsAppConfig?: WorkshopConfig;
-  onWhatsAppModeChange?: (enabled:boolean)=>Promise<void>;
-  technicians?: {nombre:string}[];
-  selectedTechnician?: string;
-  onTechnicianChange?: (name:string)=>void;
-  warrantyNotifications?: {id:string; technician:string}[];
-  onOpenWarranty?: (id:string)=>void;
-  shiftRole?: ShiftRole;
-  onShiftRoleChange?: (role: ShiftRole) => void;
   globalSearch: string;
-  setGlobalSearch: (q: string) => void;
+  setGlobalSearch: (query: string) => void;
   onOpenNewOrder: () => void;
-  notificationsCount?: number;
   urgentOrdersCount: number;
+  warrantyNotifications?: { id: string; technician: string }[];
+  onOpenWarranty?: (id: string) => void;
   onLogout?: () => void;
   onToggleMobileMenu?: () => void;
   viewMode: 'recepcion' | 'taller';
   onViewModeChange: (mode: 'recepcion' | 'taller') => void;
 }
 
-export const Header: React.FC<HeaderProps> = ({
-  whatsAppConfig,onWhatsAppModeChange,technicians=[],selectedTechnician='',onTechnicianChange,
-  warrantyNotifications = [], onOpenWarranty,
-  shiftRole = 'administrador', onShiftRoleChange,
+export function Header({
   globalSearch,
   setGlobalSearch,
   onOpenNewOrder,
   urgentOrdersCount,
+  warrantyNotifications = [],
+  onOpenWarranty,
   onLogout,
   onToggleMobileMenu,
   viewMode,
   onViewModeChange,
-}) => {
+}: HeaderProps) {
   const [showNotifications, setShowNotifications] = useState(false);
+  const [showAccount, setShowAccount] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
+  const notificationRef = useRef<HTMLDivElement>(null);
+  const accountRef = useRef<HTMLDivElement>(null);
 
-  // Global shortcut ⌘K or / to focus search
   useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
-        e.preventDefault();
+    const keydown = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
+        event.preventDefault();
         searchInputRef.current?.focus();
       }
+      if (event.key === 'Escape') {
+        setShowNotifications(false);
+        setShowAccount(false);
+      }
     };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
+    const dismiss = (event: PointerEvent) => {
+      if (!(event.target instanceof Node)) return;
+      if (!notificationRef.current?.contains(event.target))
+        setShowNotifications(false);
+      if (!accountRef.current?.contains(event.target)) setShowAccount(false);
+    };
+    window.addEventListener('keydown', keydown);
+    document.addEventListener('pointerdown', dismiss);
+    return () => {
+      window.removeEventListener('keydown', keydown);
+      document.removeEventListener('pointerdown', dismiss);
+    };
   }, []);
 
   return (
-    <header className="border-b border-zinc-800/80 bg-[#161619] px-3 md:px-6 py-2.5 flex flex-wrap items-end gap-2.5 sticky top-0 z-20">
-      <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 flex-1 min-w-0 basis-full xl:basis-auto">
-      {whatsAppConfig&&onWhatsAppModeChange&&<WhatsAppConnectionControl config={whatsAppConfig} onModeChange={onWhatsAppModeChange}/>}
-      <label className="text-xs min-w-0">Técnico del turno<select aria-label="Técnico del turno" value={selectedTechnician} onChange={e=>onTechnicianChange?.(e.target.value)} className="block w-full bg-zinc-800 p-2 rounded"><option value="">Seleccionar técnico</option>{technicians.map(t=><option key={t.nombre} value={t.nombre}>{t.nombre}</option>)}</select></label>
-      <label className="text-xs min-w-0">Perfil del turno<select aria-label="Perfil del turno" value={shiftRole} onChange={e=>onShiftRoleChange?.(e.target.value as ShiftRole)} className="block w-full bg-zinc-800 p-2 rounded"><option value="recepcion">Recepción / Mostrador</option><option value="tecnico">Técnico Laboratorio</option><option value="administrador">Administrador</option></select></label>
-      </div>
-      <div role="group" aria-label="Modo de operación" className="flex shrink-0 rounded-xl border border-zinc-700 bg-zinc-950 p-1">
-        <button type="button" aria-pressed={viewMode === 'recepcion'} onClick={() => onViewModeChange('recepcion')} className={`min-h-11 flex-1 whitespace-nowrap px-3 rounded-lg text-xs font-semibold transition-colors ${viewMode === 'recepcion' ? 'bg-zinc-100 text-zinc-950' : 'text-zinc-400 hover:text-white'}`}>🖥️ Recepción</button>
-        <button type="button" aria-pressed={viewMode === 'taller'} onClick={() => onViewModeChange('taller')} className={`min-h-11 flex-1 whitespace-nowrap px-3 rounded-lg text-xs font-semibold transition-colors ${viewMode === 'taller' ? 'bg-teal-400 text-zinc-950' : 'text-zinc-400 hover:text-white'}`}>📱 Modo Taller</button>
-      </div>
-      {/* Mobile Top Bar (Row 1 on mobile, Right side on desktop) */}
-      <div className="flex items-center justify-between gap-2 w-full order-first">
-        {/* Left Mobile: Hamburger + Brand (Hidden on desktop) */}
-        <div className="flex items-center gap-2 md:hidden">
-          <button
-            id="btn-mobile-menu"
-            onClick={onToggleMobileMenu}
-            className="p-1.5 rounded-lg text-zinc-300 hover:text-white hover:bg-zinc-800/60 border border-zinc-700/60 md:hidden shrink-0"
-            title="Abrir menú"
-          >
-            <Menu className="w-5 h-5" />
-          </button>
-          <div className="flex items-center gap-1.5">
-            <div className="w-7 h-7 rounded-lg bg-[#1c1c20] border border-zinc-700/60 flex items-center justify-center font-bold text-[11px] font-mono text-zinc-100 shadow-sm">
-              CM
-            </div>
-            <span className="font-semibold text-zinc-100 tracking-tight text-xs uppercase font-sans">
-              CELMART
-            </span>
-          </div>
-        </div>
-
-        {/* Right Actions: Notifications, + Nueva Orden, Avatar & Lock */}
-        <div className="flex items-center gap-2 sm:gap-3 ml-auto">
-          {/* Notifications Popover Toggle */}
-          <div className="relative">
+    <header className="h-16 md:h-16 shrink-0 border-b border-zinc-800/80 bg-[#161619] px-3 md:px-6 flex items-center justify-between gap-2 md:gap-4 sticky top-0 z-20">
+      <button
+        id="btn-mobile-menu"
+        type="button"
+        onClick={onToggleMobileMenu}
+        aria-label="Abrir menú"
+        className="md:hidden shrink-0 p-1.5 rounded-md text-zinc-400 hover:text-zinc-100"
+      >
+        <Menu className="w-4 h-4" />
+      </button>
+      <div className="relative group min-w-0 flex-1 max-w-xl">
+        <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500 pointer-events-none" />
+        <input
+          ref={searchInputRef}
+          id="global-search-input"
+          type="search"
+          aria-label="Búsqueda global"
+          value={globalSearch}
+          onChange={(event) => setGlobalSearch(event.target.value)}
+          placeholder="Buscar cliente por nombre o equipo por IMEI..."
+          className="w-full h-8 bg-[#1c1c20] text-zinc-100 placeholder-zinc-500 text-xs pl-8 pr-7 sm:pr-12 rounded-md border border-zinc-700/60 focus:outline-none focus:border-zinc-500"
+        />
+        <div className="absolute right-2 top-1/2 -translate-y-1/2">
+          {globalSearch ? (
             <button
-              id="btn-notifications"
-              onClick={() => setShowNotifications(!showNotifications)}
-              className="p-2 rounded-lg text-zinc-300 hover:text-zinc-100 hover:bg-zinc-800/60 border border-zinc-700/60 transition-colors relative bg-[#1c1c20]"
-              title="Notificaciones y Alertas"
+              type="button"
+              onClick={() => setGlobalSearch('')}
+              aria-label="Limpiar búsqueda"
+              className="text-zinc-500 hover:text-zinc-200"
             >
-              <Bell className="w-4 h-4" />
-              {urgentOrdersCount + warrantyNotifications.length > 0 && (
-                <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-rose-500 animate-ping"></span>
-              )}
-              {urgentOrdersCount + warrantyNotifications.length > 0 && (
-                <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-rose-500"></span>
-              )}
+              <X className="w-3 h-3" />
             </button>
-
-            {showNotifications && (
-              <div className="absolute right-0 mt-2 w-72 sm:w-80 rounded-lg bg-[#161619] border border-zinc-800/80 shadow-2xl p-3 z-50 animate-in fade-in slide-in-from-top-2 duration-150">
-                <div className="flex items-center justify-between pb-2 border-b border-zinc-800/80 mb-2">
-                  <span className="text-xs font-semibold text-zinc-100">Alertas del Taller</span>
-                  <span className="text-[10px] font-mono text-zinc-400 uppercase">En tiempo real</span>
-                </div>
-                <div className="space-y-2 max-h-64 overflow-y-auto">
-                  {warrantyNotifications.map(item=><button key={item.id} onClick={()=>{onOpenWarranty?.(item.id);setShowNotifications(false);}} className="block w-full text-left p-3 rounded bg-purple-950 text-purple-200">{item.id} · Reingreso por garantía para {item.technician}</button>)}
-                  <div className="p-2.5 rounded-lg bg-[#1c1c20] border border-zinc-800/80 text-xs flex gap-2.5 items-start">
-                    <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
-                    <div>
-                      <p className="text-zinc-100 font-medium text-[11px]">3 Órdenes Urgentes Activas</p>
-                      <p className="text-zinc-400 text-[10px] mt-0.5">OS-2418, OS-2413 y OS-2410 requieren atención prioritaria.</p>
-                    </div>
-                  </div>
-                  <div className="p-2.5 rounded-lg bg-[#1c1c20] border border-zinc-800/80 text-xs flex gap-2.5 items-start">
-                    <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
-                    <div>
-                      <p className="text-zinc-100 font-medium text-[11px]">Repuestos Recibidos</p>
-                      <p className="text-zinc-400 text-[10px] mt-0.5">Lote de 25 puertos Type-C ingresados a stock.</p>
-                    </div>
-                  </div>
-                  <div className="p-2.5 rounded-lg bg-[#1c1c20] border border-zinc-800/80 text-xs flex gap-2.5 items-start">
-                    <ShieldCheck className="w-4 h-4 text-sky-400 shrink-0 mt-0.5" />
-                    <div>
-                      <p className="text-zinc-100 font-medium text-[11px]">Garantías en Vigor</p>
-                      <p className="text-zinc-400 text-[10px] mt-0.5">128 dispositivos con garantía vigente.</p>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
-
-          {/* Primary Action: + Nueva Orden de Servicio */}
-          <button
-            id="btn-new-service-order"
-            onClick={onOpenNewOrder}
-            className="flex items-center gap-1.5 sm:gap-2 bg-zinc-100 hover:bg-white text-zinc-950 px-2.5 sm:px-3.5 py-1.5 sm:py-2 rounded-lg font-semibold text-xs shadow-sm transition-all hover:scale-[1.01] active:scale-[0.99] shrink-0"
-          >
-            <Plus className="w-4 h-4" />
-            <span className="hidden sm:inline">Nueva Orden de Servicio</span>
-            <span className="sm:hidden">Nueva Orden</span>
-          </button>
-
-          {/* User Info Avatar Badge & Lock Action */}
-          <div className="flex items-center gap-2 pl-2 border-l border-zinc-800/80">
-            <div className="w-8 h-8 rounded-full bg-[#1c1c20] border border-zinc-700/60 flex items-center justify-center text-xs font-mono font-semibold text-zinc-200">
-              CM
-            </div>
-            <div className="hidden lg:flex flex-col text-left">
-              <span className="text-xs font-semibold text-zinc-100 leading-tight">CelMart Taller</span>
-              <span className="text-[10px] text-zinc-400 font-mono">Sesión activa</span>
-            </div>
-
-            {onLogout && (
-              <button
-                id="btn-lock-session"
-                onClick={onLogout}
-                className="p-1.5 ml-0.5 rounded-lg text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800/60 border border-transparent hover:border-zinc-700/60 transition-colors"
-                title="Bloquear terminal / Cerrar sesión"
-              >
-                <Lock className="w-3.5 h-3.5" />
-              </button>
-            )}
-          </div>
+          ) : (
+            <kbd className="hidden sm:inline-flex items-center gap-0.5 px-1 py-0.5 text-[10px] font-mono text-zinc-500 border border-zinc-700/60 rounded">
+              <Command className="w-2.5 h-2.5" />K
+            </kbd>
+          )}
         </div>
       </div>
-
-      {/* Search Bar (Row 2 on mobile, Left side on desktop) */}
-      {viewMode === 'recepcion' && <div className="w-full">
-        <div className="relative group w-full">
-          <Search className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-zinc-400 group-focus-within:text-zinc-200 transition-colors" />
-          <input
-            ref={searchInputRef}
-            id="global-search-input"
-            type="text"
-            value={globalSearch}
-            onChange={(e) => setGlobalSearch(e.target.value)}
-            placeholder="Buscar cliente por nombre o equipo por IMEI..."
-            className="w-full bg-[#1c1c20] text-zinc-100 placeholder-zinc-400 text-xs pl-10 pr-12 py-2 rounded-lg border border-zinc-700/60 focus:outline-none focus:border-zinc-500 transition-all font-sans"
-          />
-          <div className="absolute right-2.5 top-1/2 -translate-y-1/2 flex items-center gap-1">
-            {globalSearch ? (
-              <button
-                onClick={() => setGlobalSearch('')}
-                className="text-zinc-400 hover:text-zinc-200 p-0.5"
-                title="Limpiar búsqueda"
-              >
-                <X className="w-3.5 h-3.5" />
-              </button>
-            ) : (
-              <kbd className="hidden sm:inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[10px] font-mono text-zinc-400 bg-zinc-800/90 border border-zinc-700/60 rounded">
-                <Command className="w-2.5 h-2.5" /> K
-              </kbd>
-            )}
-          </div>
+      <div className="flex items-center gap-1.5 sm:gap-3 shrink-0">
+        <div
+          role="group"
+          aria-label="Modo de operación"
+          className="inline-flex h-8 items-center rounded-md border border-zinc-700/60 bg-[#1c1c20] p-0.5"
+        >
+          {(
+            [
+              { mode: 'recepcion', label: 'Recepción', Icon: Monitor },
+              { mode: 'taller', label: 'Taller', Icon: Smartphone },
+            ] as const
+          ).map(({ mode, label, Icon }) => (
+            <button
+              key={mode}
+              type="button"
+              aria-label={label}
+              title={label}
+              aria-pressed={viewMode === mode}
+              onClick={() => onViewModeChange(mode)}
+              className={`h-6 px-1.5 lg:px-2 inline-flex items-center gap-1.5 rounded text-xs transition-colors ${viewMode === mode ? 'bg-zinc-700/60 text-zinc-100' : 'text-zinc-500 hover:text-zinc-200'}`}
+            >
+              <Icon className="w-3.5 h-3.5" />
+              <span className="hidden lg:inline">{label}</span>
+            </button>
+          ))}
         </div>
-      </div>}
+        <div ref={notificationRef} className="relative">
+          <button
+            id="btn-notifications"
+            type="button"
+            onClick={() => {
+              setShowNotifications(!showNotifications);
+              setShowAccount(false);
+            }}
+            aria-label="Notificaciones y alertas"
+            aria-expanded={showNotifications}
+            className="w-8 h-8 flex items-center justify-center rounded-md bg-[#1c1c20] border border-zinc-700/60 text-zinc-400 hover:text-zinc-100 relative"
+          >
+            <Bell className="w-3.5 h-3.5" />
+            {urgentOrdersCount + warrantyNotifications.length > 0 && (
+              <span className="absolute top-1.5 right-1.5 w-1.5 h-1.5 rounded-full bg-amber-400" />
+            )}
+          </button>
+          {showNotifications && (
+            <div className="absolute right-0 mt-2 w-64 max-w-[calc(100vw-2rem)] rounded-lg bg-[#161619] border border-zinc-800/80 shadow-xl p-3 z-50 text-xs">
+              <p className="font-semibold text-zinc-200 pb-2 mb-2 border-b border-zinc-800/80">
+                Alertas del taller
+              </p>
+              <div className="space-y-2 max-h-64 overflow-y-auto">
+                {urgentOrdersCount > 0 && (
+                  <p className="flex gap-2 text-zinc-400">
+                    <AlertTriangle className="w-3.5 h-3.5 shrink-0 text-amber-400" />
+                    {urgentOrdersCount} órdenes urgentes activas
+                  </p>
+                )}
+                {warrantyNotifications.map((item) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => {
+                      onOpenWarranty?.(item.id);
+                      setShowNotifications(false);
+                    }}
+                    className="block w-full text-left p-2 rounded-md bg-[#1c1c20] text-zinc-300"
+                  >
+                    <span className="font-mono">{item.id}</span> · Garantía para{' '}
+                    {item.technician}
+                  </button>
+                ))}
+                {!urgentOrdersCount && !warrantyNotifications.length && (
+                  <p className="text-zinc-500">Sin alertas pendientes.</p>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+        <button
+          id="btn-new-service-order"
+          type="button"
+          onClick={onOpenNewOrder}
+          aria-label="Nueva Orden de Servicio"
+          title="Nueva Orden de Servicio"
+          className="h-8 px-2 sm:px-3 inline-flex items-center gap-1.5 bg-zinc-100 hover:bg-white text-zinc-950 rounded-md text-xs font-semibold whitespace-nowrap"
+        >
+          <Plus className="w-3.5 h-3.5" />
+          <span className="hidden sm:inline lg:hidden">Nueva Orden</span>
+          <span className="hidden lg:inline">Nueva Orden de Servicio</span>
+        </button>
+        <div
+          ref={accountRef}
+          className="relative border-l border-zinc-800/80 pl-1.5 sm:pl-3"
+        >
+          <button
+            type="button"
+            aria-label="Cuenta del taller"
+            aria-expanded={showAccount}
+            onClick={() => {
+              setShowAccount(!showAccount);
+              setShowNotifications(false);
+            }}
+            className="w-8 h-8 rounded-full bg-[#1c1c20] border border-zinc-700/60 flex items-center justify-center text-xs font-mono text-zinc-300 hover:text-white"
+          >
+            CM
+          </button>
+          {showAccount && (
+            <div className="absolute right-0 mt-2 w-44 rounded-lg border border-zinc-800/80 bg-[#161619] p-1 shadow-xl text-xs">
+              <p className="px-2 py-2 text-zinc-500">CelMart · Sesión activa</p>
+              {onLogout && (
+                <button
+                  id="btn-lock-session"
+                  type="button"
+                  onClick={onLogout}
+                  className="w-full p-2 rounded-md hover:bg-[#1c1c20] text-zinc-300 flex items-center gap-2"
+                >
+                  <LogOut className="w-3.5 h-3.5" />
+                  Cerrar sesión
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
     </header>
   );
-};
+}

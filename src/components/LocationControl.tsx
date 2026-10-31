@@ -16,7 +16,7 @@ export function LocationControl({
     if (!editing) setValue(order.ubicacionFisica || '');
   }, [order.ubicacionFisica, editing]);
   return (
-    <div className="space-y-2 text-sm">
+    <div className="space-y-2 text-xs">
       <p className="text-zinc-400 break-words">
         Ubicación en taller:{' '}
         <strong className="text-zinc-100">
@@ -25,7 +25,7 @@ export function LocationControl({
       </p>
       <button
         type="button"
-        className="min-h-11 w-full rounded-lg border border-zinc-700 px-2 text-sm"
+        className="min-h-9 rounded-md border border-zinc-800/80 bg-[#1c1c20] px-2 text-xs text-zinc-400"
         onClick={() => setEditing(!editing)}
         disabled={busy}
       >
@@ -59,11 +59,11 @@ export function LocationControl({
             required
             maxLength={120}
             disabled={busy}
-            className="w-full rounded bg-zinc-800 p-3"
+            className="w-full rounded-md border border-zinc-800/80 bg-[#1c1c20] p-2 text-xs"
           />
           <button
             disabled={busy || !value.trim()}
-            className="min-h-11 w-full bg-teal-400 text-black rounded"
+            className="min-h-9 w-full bg-zinc-100 text-zinc-950 rounded-md text-xs"
           >
             {busy ? 'Guardando…' : 'Guardar ubicación'}
           </button>

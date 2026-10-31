@@ -21,9 +21,9 @@ import { uploadWorkshopPhoto } from '../lib/imageStorage';
 function InventoryThumbnail({ url, name, large = false }: { url?: string; name: string; large?: boolean }) {
   const [failedUrl, setFailedUrl] = useState<string | undefined>();
   return (
-    <div className={`${large ? 'h-24 w-24' : 'h-11 w-11'} shrink-0 overflow-hidden rounded-lg border border-zinc-700/60 bg-[#111114] flex items-center justify-center`}>
+    <div className={`${large ? 'h-24 w-24' : 'w-9 h-9'} shrink-0 overflow-hidden rounded-md border border-zinc-700/60 bg-[#1c1c20] flex items-center justify-center`}>
       {url && url !== failedUrl ? (
-        <img src={url} alt={`Imagen de ${name || 'repuesto'}`} loading="lazy" referrerPolicy="no-referrer" className="h-full w-full object-contain" onError={() => setFailedUrl(url)} />
+        <img src={url} alt={`Imagen de ${name || 'repuesto'}`} loading="lazy" referrerPolicy="no-referrer" className="h-full w-full object-cover" onError={() => setFailedUrl(url)} />
       ) : (
         <ImageOff className={`${large ? 'h-7 w-7' : 'h-4 w-4'} text-zinc-600`} aria-label="Sin imagen disponible" />
       )}
@@ -344,11 +344,11 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
       {/* Inventory Table */}
       <div className="bg-[#161619] border border-zinc-800/80 rounded-lg overflow-hidden shadow-sm">
         <div className="overflow-x-auto w-full">
-          <table className="w-full text-left border-collapse min-w-[780px]">
+          <table className="w-full text-left border-collapse min-w-[1120px]">
             <thead>
               <tr className="border-b border-zinc-800/80 bg-[#111114]">
                 <th className="py-2.5 px-4 text-[10px] uppercase font-mono tracking-wider text-zinc-400 font-semibold whitespace-nowrap">
-                  REPUESTO / SKU / CÓDIGO DE BARRAS
+                  REPUESTO / SKU
                 </th>
                 <th className="py-2.5 px-4 text-[10px] uppercase font-mono tracking-wider text-zinc-400 font-semibold whitespace-nowrap">
                   CATEGORÍA
@@ -396,12 +396,12 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                       <td className="py-3 px-4">
                         <div className="flex items-center gap-3">
                           <InventoryThumbnail url={item.imagenUrl} name={item.nombre} />
-                          <div className="flex flex-col">
+                          <div className="flex flex-col min-w-[200px]">
                             <span className="font-semibold text-zinc-100 group-hover:text-white">
                               {item.nombre}
                             </span>
                             <div className="flex items-center gap-2 mt-0.5">
-                              <span className="text-[11px] font-mono text-zinc-400 flex items-center gap-1">
+                              <span className="text-[11px] font-mono text-zinc-400 flex items-center gap-1 whitespace-nowrap">
                                 <Barcode className="w-3 h-3 text-zinc-500 inline" />
                                 SKU: {item.sku}
                               </span>
@@ -411,14 +411,14 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                       </td>
 
                       {/* Categoría */}
-                      <td className="py-3 px-4">
+                      <td className="py-3 px-4 whitespace-nowrap">
                         <span className="inline-flex items-center gap-1 text-[11px] font-medium text-zinc-300 bg-[#1c1c20] border border-zinc-700/60 px-2 py-0.5 rounded">
                           {item.categoria}
                         </span>
                       </td>
 
                       {/* Compatibilidad & Ubicación */}
-                      <td className="py-3 px-4">
+                      <td className="py-3 px-4 min-w-[180px]">
                         <div className="flex flex-col">
                           <span className="text-zinc-200 font-medium">
                             {item.compatibilidad}
@@ -430,7 +430,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                       </td>
 
                       {/* Precios */}
-                      <td className="py-3 px-4 font-mono">
+                      <td className="py-3 px-4 font-mono whitespace-nowrap">
                         <div className="flex items-center gap-2">
                           <span className="text-zinc-400 line-through text-[11px]">
                             ${item.costoCompra}
@@ -442,7 +442,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                       </td>
 
                       {/* Stock Status Badge */}
-                      <td className="py-3 px-4 text-center">
+                      <td className="py-3 px-4 text-center whitespace-nowrap">
                         {isLowStock ? (
                           <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-mono font-medium bg-rose-950/40 text-rose-300 border border-rose-900/50">
                             <span className="w-1.5 h-1.5 rounded-full bg-rose-400"></span>

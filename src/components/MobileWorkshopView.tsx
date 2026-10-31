@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { ArrowRight, Camera, CheckCheck, ClipboardList, FilePenLine, Inbox, LoaderCircle, LockKeyhole, MessageCircle, Search, Wrench, X } from 'lucide-react';
+import { ArrowRight, Camera, CheckCheck, ClipboardList, FilePenLine, Inbox, LoaderCircle, LockKeyhole, MessageCircle, Wrench } from 'lucide-react';
 import type { Order, OrderStatus, TechNote, WhatsAppTemplateKey } from '../types';
 import { uploadWorkshopPhoto } from '../lib/imageStorage';
 import { determineTemplateKeyForStatus } from '../lib/whatsapp';
@@ -10,6 +10,8 @@ export type WorkshopLane = 'cola' | 'mesa' | 'listos';
 
 export interface MobileWorkshopViewProps {
   selectedTechnician?: string;
+  technicians?: { nombre: string }[];
+  onTechnicianChange?: (name: string) => void;
   onSaveLocation?: (id:string,value:string)=>Promise<void>;
   onPrintLabel?: (order:Order)=>void;
   orders: Order[];
@@ -171,8 +173,8 @@ function WorkshopOrderCard({ now,onSaveLocation,onPrintLabel,order, onSelectOrde
   };
 
   return (
-    <article className={`min-w-0 rounded-2xl border bg-[#17171b] overflow-hidden ${order.prioridadUrgente ? 'border-amber-500/70' : isReady ? 'border-emerald-700/60' : 'border-zinc-700/80'}`} aria-label={`Orden ${order.id}`}>
-      <div className={`px-4 py-2.5 flex flex-wrap justify-between gap-2 text-xs font-semibold ${isReady ? 'bg-emerald-950/40 text-emerald-300' : 'bg-zinc-900 text-zinc-300'}`}>
+    <article className={`min-w-0 rounded-lg border bg-[#161619] overflow-hidden ${order.prioridadUrgente ? 'border-amber-500/70' : isReady ? 'border-emerald-700/60' : 'border-zinc-800/80'}`} aria-label={`Orden ${order.id}`}>
+      <div className={`px-4 py-2.5 flex flex-wrap justify-between gap-2 text-xs font-semibold ${isReady ? 'bg-emerald-950/40 text-emerald-300' : 'bg-[#111114] text-zinc-400'}`}>
         <span className="font-mono text-sm text-zinc-100">{order.id}</span>
         <span>{order.prioridadUrgente ? '⚡ URGENTE · ' : ''}{order.estado}</span>
       </div>
@@ -180,21 +182,21 @@ function WorkshopOrderCard({ now,onSaveLocation,onPrintLabel,order, onSelectOrde
       <div className="p-4 space-y-4">
         <button type="button" onClick={() => onSelectOrder(order)} className="w-full min-h-12 text-left rounded-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-400" aria-label={`Abrir expediente ${order.id}`}>
           <span className="block text-[11px] text-zinc-400 uppercase tracking-wider">{order.dispositivo.categoria || 'Smartphone'} · {order.dispositivo.marca}</span>
-          <span className="mt-1 block text-xl leading-tight font-bold text-zinc-100 break-words">{order.dispositivo.modelo || 'Equipo sin modelo'}</span>
+          <span className="mt-1 block text-sm leading-tight font-bold text-zinc-100 break-words">{order.dispositivo.modelo || 'Equipo sin modelo'}</span>
           <span className="mt-1 block text-sm text-zinc-400">{order.cliente.nombre}</span>
         </button>
 
         {(order.parentOrderId || order.estado==='Garantía') && <span className="inline-block bg-purple-900 text-purple-200 px-3 py-1 rounded-full text-xs">Garantía Activa · {order.parentOrderId || order.id}</span>}
         <p className={timing.stale?'text-amber-300 font-semibold':'text-xs text-zinc-400'}>{timing.label}{timing.stale?' · ⚠ Más de 48 h sin cambio de estado':''}{timing.statusUnknown?' · Estado sin fecha verificable':''}</p>
         {onSaveLocation&&<LocationControl order={order} onSave={onSaveLocation}/>}
-        {onPrintLabel&&<button type="button" onClick={()=>onPrintLabel(order)} className="min-h-11 w-full border border-zinc-700 rounded px-2">🏷️ Imprimir Etiqueta de Equipo</button>}
-        <p className="text-base leading-relaxed text-zinc-200 break-words">{order.fallaDeclarada || 'Revisar falla con recepción.'}</p>
+        {onPrintLabel&&<button type="button" onClick={()=>onPrintLabel(order)} className="min-h-9 w-full border border-zinc-800/80 bg-[#1c1c20] rounded-md px-2 text-xs text-zinc-400">🏷️ Imprimir Etiqueta de Equipo</button>}
+        <p className="text-xs leading-relaxed text-zinc-200 break-words">{order.fallaDeclarada || 'Revisar falla con recepción.'}</p>
 
-        <div className="rounded-xl bg-black/25 border border-zinc-800 p-3 flex items-center gap-3">
+        <div className="rounded-md bg-[#111114] border border-zinc-800/80 p-2.5 flex items-center gap-3">
           {unlock.points.length ? <UnlockPattern points={unlock.points} /> : <LockKeyhole className="w-5 h-5 shrink-0 text-teal-400" />}
           <div className="min-w-0">
             <span className="block text-xs text-zinc-400">{unlock.label}</span>
-            <span className="block mt-1 font-mono font-bold text-lg text-teal-200 break-all select-all">{unlock.value}</span>
+            <span className="block mt-1 font-mono font-semibold text-sm text-zinc-200 break-all select-all">{unlock.value}</span>
           </div>
         </div>
 
@@ -212,13 +214,13 @@ function WorkshopOrderCard({ now,onSaveLocation,onPrintLabel,order, onSelectOrde
 
         <input ref={cameraInput} type="file" accept="image/*" capture="environment" onChange={receivePhoto} disabled={pending !== null} className="hidden" aria-label={`Tomar foto para ${order.id}`} />
         <div className="grid grid-cols-3 gap-2">
-          <button type="button" onClick={() => cameraInput.current?.click()} disabled={pending !== null} className="min-h-16 rounded-xl border border-zinc-700 text-zinc-100 bg-zinc-800/60 active:bg-zinc-700 disabled:opacity-40 flex flex-col items-center justify-center gap-1.5 text-xs font-semibold">
+          <button type="button" onClick={() => cameraInput.current?.click()} disabled={pending !== null} className="min-h-11 rounded-md border border-zinc-800/80 text-zinc-300 bg-[#1c1c20] active:bg-zinc-800 disabled:opacity-40 flex flex-col items-center justify-center gap-1.5 text-xs font-semibold">
             {pending === 'photo' ? <LoaderCircle className="w-5 h-5 animate-spin" /> : <Camera className="w-5 h-5" />} + Foto
           </button>
-          <button type="button" onClick={() => setShowNote((current) => !current)} disabled={pending !== null} aria-expanded={showNote} className="min-h-16 rounded-xl border border-zinc-700 text-zinc-100 bg-zinc-800/60 active:bg-zinc-700 disabled:opacity-40 flex flex-col items-center justify-center gap-1.5 text-xs font-semibold">
+          <button type="button" onClick={() => setShowNote((current) => !current)} disabled={pending !== null} aria-expanded={showNote} className="min-h-11 rounded-md border border-zinc-800/80 text-zinc-300 bg-[#1c1c20] active:bg-zinc-800 disabled:opacity-40 flex flex-col items-center justify-center gap-1.5 text-xs font-semibold">
             <FilePenLine className="w-5 h-5" /> + Nota rápida
           </button>
-          <button type="button" onClick={() => onOpenWhatsApp(order, determineTemplateKeyForStatus(order.estado))} disabled={pending !== null} aria-label={`WhatsApp al cliente de ${order.id}`} className="min-h-16 rounded-xl border border-emerald-800/60 text-emerald-300 bg-emerald-950/25 active:bg-emerald-900/50 disabled:opacity-40 flex flex-col items-center justify-center gap-1.5 text-xs font-semibold">
+          <button type="button" onClick={() => onOpenWhatsApp(order, determineTemplateKeyForStatus(order.estado))} disabled={pending !== null} aria-label={`WhatsApp al cliente de ${order.id}`} className="min-h-11 rounded-md border border-zinc-800/80 text-zinc-300 bg-[#1c1c20] active:bg-zinc-800 disabled:opacity-40 flex flex-col items-center justify-center gap-1.5 text-xs font-semibold">
             <MessageCircle className="w-5 h-5" /><span className="text-xs">WhatsApp</span>
           </button>
         </div>
@@ -227,9 +229,9 @@ function WorkshopOrderCard({ now,onSaveLocation,onPrintLabel,order, onSelectOrde
           <form onSubmit={saveNote} className="space-y-2">
             <label className="text-xs text-zinc-400 block">
               Avance de reparación
-              <textarea value={noteDraft} onChange={(event) => setNoteDraft(event.target.value)} disabled={pending !== null} rows={3} placeholder="Medición, diagnóstico o siguiente paso…" className="mt-2 block w-full rounded-xl border border-zinc-700 bg-zinc-950 p-3 text-base text-zinc-100 focus:outline-none focus:border-teal-500 disabled:opacity-50" />
+              <textarea value={noteDraft} onChange={(event) => setNoteDraft(event.target.value)} disabled={pending !== null} rows={3} placeholder="Medición, diagnóstico o siguiente paso…" className="mt-2 block w-full rounded-md border border-zinc-800/80 bg-[#1c1c20] p-3 text-xs text-zinc-100 focus:outline-none focus:border-teal-500 disabled:opacity-50" />
             </label>
-            <button type="submit" disabled={pending !== null || !noteDraft.trim()} className="w-full min-h-12 rounded-xl bg-zinc-100 text-zinc-950 font-semibold disabled:opacity-40 flex items-center justify-center gap-2">
+            <button type="submit" disabled={pending !== null || !noteDraft.trim()} className="w-full min-h-11 rounded-md bg-zinc-100 text-zinc-950 font-semibold disabled:opacity-40 flex items-center justify-center gap-2">
               {pending === 'note' && <LoaderCircle className="w-4 h-4 animate-spin" />}{pending === 'note' ? 'Guardando nota…' : 'Guardar nota'}
             </button>
           </form>
@@ -241,7 +243,7 @@ function WorkshopOrderCard({ now,onSaveLocation,onPrintLabel,order, onSelectOrde
 
         <div className="space-y-2">
           {actions.map((action, index) => (
-            <button key={action.status} type="button" onClick={() => { void advance(action.status); }} disabled={pending !== null} className={`w-full min-h-14 px-3 rounded-xl flex items-center justify-center gap-2 text-sm font-bold disabled:opacity-40 ${index === 0 ? 'bg-teal-400 text-zinc-950 active:bg-teal-300' : 'border border-zinc-600 text-zinc-200 active:bg-zinc-800'}`}>
+            <button key={action.status} type="button" onClick={() => { void advance(action.status); }} disabled={pending !== null} className={`w-full min-h-11 px-3 rounded-md flex items-center justify-center gap-2 text-xs font-semibold disabled:opacity-40 ${index === 0 ? 'bg-zinc-100 text-zinc-950 active:bg-white' : 'border border-zinc-800/80 bg-[#1c1c20] text-zinc-300 active:bg-zinc-800'}`}>
               {pending === 'status' ? <LoaderCircle className="w-5 h-5 animate-spin" /> : <ArrowRight className="w-5 h-5" />}
               {pending === 'status' ? 'Guardando estado…' : action.label}
             </button>
@@ -258,7 +260,7 @@ const LANES = [
   { id: 'listos' as const, label: 'Listos', icon: CheckCheck, empty: 'Los equipos listos para entregar aparecerán aquí.' },
 ];
 
-export function MobileWorkshopView({ selectedTechnician='',orders, searchQuery, onSearchChange, onReceiveExpress, lastDeliveredOrder, onDeliveryReceipt, ...cardActions }: MobileWorkshopViewProps) {
+export function MobileWorkshopView({ selectedTechnician='',technicians=[],onTechnicianChange,orders, searchQuery, onSearchChange, onReceiveExpress, lastDeliveredOrder, onDeliveryReceipt, ...cardActions }: MobileWorkshopViewProps) {
   const [mineOnly,setMineOnly]=useState(false);
   const [now,setNow]=useState(()=>new Date());
   useEffect(()=>{const timer=setInterval(()=>setNow(new Date()),60000);return()=>clearInterval(timer);},[]);
@@ -275,45 +277,42 @@ export function MobileWorkshopView({ selectedTechnician='',orders, searchQuery, 
     <div className="w-full max-w-5xl mx-auto px-3 py-4 sm:px-5 space-y-4 pb-8">
       <div className="flex items-center justify-between gap-3">
         <div>
-          <h1 className="text-xl font-bold text-zinc-100">Mesa de trabajo</h1>
+          <h1 className="text-sm font-semibold text-zinc-100">Mesa de trabajo</h1>
           <p className="text-xs mt-1 text-zinc-400">La comanda del taller, siempre al día.</p>
         </div>
-        <Wrench className="w-6 h-6 text-teal-400 shrink-0" />
+        <Wrench className="w-4 h-4 text-zinc-500 shrink-0" />
       </div>
 
-      <button type="button" onClick={onReceiveExpress} className="w-full min-h-16 rounded-2xl bg-teal-400 active:bg-teal-300 text-zinc-950 font-bold flex items-center justify-center gap-3 shadow-lg shadow-teal-950/30">
-        <Camera className="w-6 h-6" /><span className="text-lg">Recibir Equipo Exprés</span><ArrowRight className="w-5 h-5" />
+      <button type="button" onClick={onReceiveExpress} className="w-full min-h-11 rounded-md bg-zinc-100 active:bg-white text-zinc-950 font-semibold flex items-center justify-center gap-3">
+        <Camera className="w-6 h-6" /><span className="text-xs">Recibir Equipo Exprés</span><ArrowRight className="w-5 h-5" />
       </button>
 
-      <div className="relative">
-        <Search className="absolute top-4 left-3 w-5 h-5 text-zinc-500 pointer-events-none" />
-        <input value={searchQuery} onChange={(event) => onSearchChange(event.target.value)} type="search" aria-label="Buscar en las órdenes del taller" placeholder="Folio, equipo, cliente o falla…" className="w-full h-13 rounded-xl bg-[#17171b] border border-zinc-700 pl-11 pr-12 text-base text-zinc-100 focus:outline-none focus:border-teal-400" />
-        {searchQuery && <button type="button" onClick={() => onSearchChange('')} aria-label="Limpiar búsqueda" className="absolute right-1 top-1 w-11 h-11 text-zinc-400 flex items-center justify-center rounded-lg"><X className="w-5 h-5" /></button>}
+      <div className="flex flex-wrap items-center gap-2">
+        <button type="button" aria-pressed={mineOnly} onClick={()=>setMineOnly(!mineOnly)} className={`h-9 rounded-md border px-3 text-xs ${mineOnly?'bg-[#1c1c20] border-zinc-600 text-zinc-100':'border-zinc-800/80 text-zinc-400'}`}>Mis Equipos Asignados {mineOnly?'✓':''}</button>
+        {mineOnly&&onTechnicianChange&&<select aria-label="Técnico de mis equipos asignados" value={selectedTechnician} onChange={event=>onTechnicianChange(event.target.value)} className="h-9 max-w-full rounded-md border border-zinc-800/80 bg-[#1c1c20] px-2 text-xs text-zinc-300"><option value="">Seleccionar técnico</option>{technicians.map(technician=><option key={technician.nombre} value={technician.nombre}>{technician.nombre}</option>)}</select>}
       </div>
-
-      <button type="button" aria-pressed={mineOnly} onClick={()=>setMineOnly(!mineOnly)} className="min-h-12 w-full rounded-xl border border-zinc-600 px-3">Mis Equipos Asignados {mineOnly?'✓':''}</button>
-      {mineOnly&&!selectedTechnician&&<p role="status" className="text-amber-300">Selecciona el técnico del turno en la cabecera para ver sus equipos.</p>}
+      {mineOnly&&!selectedTechnician&&<p role="status" className="text-xs text-zinc-500">Selecciona el técnico para ver sus equipos asignados.</p>}
       <div className="grid grid-cols-3 gap-2" role="group" aria-label="Colas de trabajo">
         {lanes.map(({ id, label, icon: Icon, orders: laneOrders }) => (
-          <button key={id} type="button" onClick={() => setActiveLane(id)} aria-pressed={activeLane === id} className={`min-h-16 px-2 py-2 rounded-xl flex flex-col items-center justify-center gap-1 text-sm font-semibold border ${activeLane === id ? 'bg-zinc-100 text-zinc-950 border-zinc-100' : 'bg-[#17171b] text-zinc-400 border-zinc-700 active:bg-zinc-800'}`}>
+          <button key={id} type="button" onClick={() => setActiveLane(id)} aria-pressed={activeLane === id} className={`min-h-11 px-2 py-2 rounded-md flex flex-col items-center justify-center gap-1 text-xs font-medium border ${activeLane === id ? 'bg-zinc-100 text-zinc-950 border-zinc-100' : 'bg-[#161619] text-zinc-400 border-zinc-800/80 active:bg-zinc-800'}`}>
             <span className="flex gap-2 items-center"><Icon className="w-4 h-4" />{label}</span>
             <span className="font-mono text-xs">{laneOrders.length} equipo{laneOrders.length === 1 ? '' : 's'}</span>
           </button>
         ))}
       </div>
 
-      {statusNotice && <p role="status" className="text-sm text-teal-300 rounded-xl bg-teal-950/25 border border-teal-900/50 p-3">{statusNotice}</p>}
+      {statusNotice && <p role="status" className="text-xs text-zinc-300 rounded-md bg-[#161619] border border-zinc-800/80 p-3">{statusNotice}</p>}
 
       {lastDeliveredOrder?.estado === 'Entregado' && (
-        <section aria-label="Comprobante de la última entrega" className="rounded-2xl border border-teal-700/50 bg-teal-950/40 p-4 space-y-3">
-          <p role="status" className="text-sm font-semibold text-teal-200">{lastDeliveredOrder.id} · Equipo entregado</p>
+        <section aria-label="Comprobante de la última entrega" className="rounded-lg border border-zinc-800/80 bg-[#161619] p-4 space-y-3">
+          <p role="status" className="text-xs font-semibold text-zinc-200">{lastDeliveredOrder.id} · Equipo entregado</p>
           <p className="text-xs text-zinc-400">
             {lastDeliveredOrder.fechaEntrega && Number.isFinite(Date.parse(lastDeliveredOrder.fechaEntrega))
               ? <time dateTime={lastDeliveredOrder.fechaEntrega}>{new Date(lastDeliveredOrder.fechaEntrega).toLocaleString('es-MX', { dateStyle: 'medium', timeStyle: 'short' })}</time>
               : 'Fecha de entrega no registrada'}
             {' · '}{lastDeliveredOrder.garantiaDias} días de garantía
           </p>
-          {onDeliveryReceipt && <button type="button" onClick={() => onDeliveryReceipt(lastDeliveredOrder)} className="w-full min-h-14 rounded-xl bg-teal-400 text-zinc-950 font-bold text-sm px-3 flex items-center justify-center gap-2"><MessageCircle className="h-5 w-5 shrink-0" />Enviar comprobante y garantía</button>}
+          {onDeliveryReceipt && <button type="button" onClick={() => onDeliveryReceipt(lastDeliveredOrder)} className="w-full min-h-11 rounded-md bg-zinc-100 text-zinc-950 font-semibold text-xs px-3 flex items-center justify-center gap-2"><MessageCircle className="h-5 w-5 shrink-0" />Enviar comprobante y garantía</button>}
         </section>
       )}
 
@@ -327,7 +326,7 @@ export function MobileWorkshopView({ selectedTechnician='',orders, searchQuery, 
         ))}
       </div>
       {currentLane.orders.length === 0 && (
-        <div className="border border-dashed border-zinc-700 rounded-2xl py-12 px-5 text-center space-y-3">
+        <div className="border border-dashed border-zinc-800/80 rounded-lg py-12 px-5 text-center space-y-3">
           <Inbox className="w-9 h-9 text-zinc-600 mx-auto" />
           <p className="text-zinc-300">{searchQuery.trim() ? 'No encontramos equipos con esa búsqueda en esta cola.' : currentLane.empty}</p>
           {searchQuery.trim() && <button type="button" onClick={() => onSearchChange('')} className="min-h-12 px-4 text-teal-300 font-semibold">Limpiar búsqueda</button>}

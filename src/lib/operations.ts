@@ -1,5 +1,4 @@
 import type { Order } from '../types';
-export type ShiftRole = 'recepcion' | 'tecnico' | 'administrador';
 export type PaymentMethod = 'Efectivo' | 'Transferencia';
 export function workshopDate(date = new Date()): string {
   return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Mexico_City', year: 'numeric', month: '2-digit', day: '2-digit' }).format(date);
