@@ -70,3 +70,16 @@ Los comprobantes de 58/80 mm incluyen un QR SVG generado localmente con `qrcode.
 Para entregar, la app exige el estado **Listo**. El primer cambio a **Entregado** registra `ordenes.entregado_at` desde el servidor y conserva esa fecha frente a cambios posteriores. Las órdenes históricas ya entregadas mantienen fecha desconocida; no se inventa una. El tablero, el expediente y el ticket ofrecen enviar el comprobante final y la garantía en un toque, por API o con WhatsApp manual como respaldo.
 
 La PWA utiliza `manifest.json`, iconos CM en SVG/PNG y modo `standalone`. En Android usa **Instalar aplicación / Añadir a pantalla de inicio**; en iOS, **Compartir → Añadir a pantalla de inicio**. El service worker sólo conserva iconos, manifest y la página de desconexión. No almacena respuestas de Supabase, datos del taller, fotos ni mensajes, y no permite operaciones offline con información desactualizada.
+
+
+## Fase 4: caja, garantías y perfiles de turno
+
+Aplicar `supabase_phase4.sql` después de las migraciones anteriores. TypeScript se valida ahora con `strict: true`.
+
+Recepción registra método (Efectivo/Transferencia) e importe en la ficha antes de entregar. El corte utiliza fecha de entrega y día de Ciudad de México, y bloquea el cierre si existen entregas de hoy sin clasificar. Las entregas históricas no reciben métodos inventados: se regularizan desde su ficha. El neto es apertura + efectivo + transferencias − costo de piezas consumidas; incluye dinero bancario, no sólo billetes en caja. Cada fecha tiene un único cierre, con autor de sesión y valores calculados por servidor. Se conserva el ticket del día para imprimir en58/80mm. Una caja cerrada impide nuevas entregas y consumos de piezas ese mismo día; cierra al terminar el turno. Las operaciones usan el mismo bloqueo transaccional para evitar movimientos simultáneos omitidos.
+
+Asignar una pieza desde la orden descuenta stock, guarda su costo de compra de ese momento y registra el movimiento en una transacción. La evolución posterior del precio de compra no altera el corte. Los consumos históricos anteriores a esta versión, sin costo registrado, no se estiman. Los ajustes manuales del almacén no representan asignaciones a una reparación y no forman parte de este costo.
+
+Para una garantía, buscar el folio original, abrir la ficha y escribir el motivo. La vigencia se verifica nuevamente en servidor, desde la entrega y sus días de garantía. Se crea OS-XXXX-G1/G2 sin modificar el cobro original, con mano de obra cero y asignación al técnico anterior. La nota, el distintivo púrpura, la alerta de cabecera y Realtime notifican el reingreso dentro del taller; no se envían mensajes externos al técnico. La garantía no se renueva a través de subórdenes encadenadas.
+
+El selector de perfil adapta la interfaz: técnico sin reportes globales ni costos de compra; recepción con órdenes/cobros; administrador con configuración, inventario completo y corte. Son perfiles operativos intercambiables del turno, no autenticación RBAC ni una frontera de autorización frente a un usuario autenticado que llame directamente a la API. Supabase conserva acceso autenticado compartido del único taller; anónimos no acceden a caja, consumos ni datos internos. Para credenciales personales con elevación protegida se requiere asignación de roles en servidor, distinta de este selector rápido.

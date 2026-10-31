@@ -494,10 +494,38 @@ export function createMockSupabaseClient() {
     from(tableName: string) {
       return createQueryBuilder(tableName);
     },
-    async rpc(name: string, args?: { p_order_id?: string }) {
+    async rpc(name: string, args: Record<string, any> = {}): Promise<{data:any;error:any}> {
+      if (['resumen_caja','cerrar_caja','reingreso_garantia','asignar_repuesto'].includes(name)) {
+        restoreTables();
+        const day=(d=new Date())=>new Intl.DateTimeFormat('en-CA',{timeZone:'America/Mexico_City',year:'numeric',month:'2-digit',day:'2-digit'}).format(d);
+        tables.cortes_caja??=[]; tables.consumos_repuestos??=[];
+        try {
+          if(name==='resumen_caja'||name==='cerrar_caja') {
+            const date=name==='cerrar_caja'?day():args.p_fecha;
+            const orders=tables.ordenes.filter(o=>o.estado==='Entregado'&&o.entregado_at&&day(new Date(o.entregado_at))===date);
+            const sum=(method:string)=>orders.filter(o=>o.metodo_pago===method).reduce((n,o)=>n+Number(o.monto_cobrado||0),0);
+            const data={fecha:date,total_efectivo:sum('Efectivo'),total_transferencia:sum('Transferencia'),sin_metodo:orders.filter(o=>!o.metodo_pago||o.monto_cobrado==null).length,gastos_repuestos:tables.consumos_repuestos.filter(o=>day(new Date(o.consumed_at))===date).reduce((n,o)=>n+o.cantidad*o.costo_unitario,0)};
+            if(name==='resumen_caja')return {data,error:null};
+            if(!Number.isFinite(args.p_apertura)||args.p_apertura<0)throw new Error('Apertura inválida');
+            if(data.sin_metodo)throw new Error('Hay entregas sin método de pago');
+            if(tables.cortes_caja.some(c=>c.fecha===date))throw new Error('La caja ya está cerrada');
+            const closed={...data,id:'CAJA-'+date,monto_apertura:args.p_apertura,total_neto:Math.round((args.p_apertura+data.total_efectivo+data.total_transferencia-data.gastos_repuestos)*100)/100,cerrado_por:'Demo',observaciones:args.p_observaciones||'',created_at:new Date().toISOString()};tables.cortes_caja.push(closed);persistTables();return {data:clone(closed),error:null};
+          }
+          const o=tables.ordenes.find(o=>o.id===args.p_order_id);if(!o)throw new Error('Orden no encontrada');
+          if(name==='reingreso_garantia') {
+            const elapsed=Date.now()-Date.parse(o.entregado_at);if(o.estado!=='Entregado'||!Number.isFinite(elapsed)||elapsed<0||elapsed>=o.garantia_dias*86400000||o.parent_order_id)throw new Error('Garantía no vigente');
+            if(String(args.p_motivo||'').trim().length<3)throw new Error('Indica motivo');
+            const n=Math.max(0,...tables.ordenes.filter(c=>c.parent_order_id===o.id).map(c=>Number(c.id.split('-G').pop())))+1;
+            const child={...clone(o),id:o.id+'-G'+n,parent_order_id:o.id,motivo_garantia:args.p_motivo,estado:'Garantía',entregado_at:null,metodo_pago:null,monto_cobrado:null,costo_mano_obra:0,total_estimado:0,repuestos_asignados:[],fotos_evidencia:[],checklist_json:{},falla_declarada:args.p_motivo,created_at:new Date().toISOString(),notas_tecnicas:[{id:crypto.randomUUID(),autor:'Recepción',contenido:'Reingreso asignado a '+(o.tecnico_nombre||'Por asignar')+': '+args.p_motivo,fecha:new Date().toISOString(),tipo:'general'}]};tables.ordenes.unshift(child);persistTables();notify({eventType:'INSERT',schema:'public',table:'ordenes',new:child,old:{}});return {data:clone(child),error:null};
+          }
+          const i=tables.inventario.find(i=>i.sku===args.p_sku);if(!i||!Number.isInteger(args.p_cantidad)||args.p_cantidad<=0||i.stock_actual<args.p_cantidad||o.estado==='Entregado')throw new Error('Stock insuficiente o cantidad inválida');
+          if(tables.cortes_caja.some(c=>c.fecha===day()))throw new Error('Caja cerrada');
+          i.stock_actual-=args.p_cantidad;const part={id:crypto.randomUUID(),nombre:i.nombre,sku:i.sku,cantidad:args.p_cantidad,precioUnitario:i.precio_venta};o.repuestos_asignados=[...(o.repuestos_asignados||[]),part];o.total_estimado=Number(o.costo_mano_obra)+o.repuestos_asignados.reduce((n:number,p:any)=>n+p.cantidad*p.precioUnitario,0);tables.consumos_repuestos.push({id:crypto.randomUUID(),orden_id:o.id,sku:i.sku,cantidad:args.p_cantidad,costo_unitario:i.costo_compra,consumed_at:new Date().toISOString()});persistTables();notify({eventType:'UPDATE',schema:'public',table:'ordenes',new:o,old:{}});return {data:clone(o),error:null};
+        }catch(e){return {data:null,error:{message:(e as Error).message}};}
+      }
       if (name !== 'get_order_tracking') return { data: null, error: { code: 'PGRST202', message: 'Función no encontrada.' } };
       const id = args?.p_order_id;
-      if (typeof id !== 'string' || id.length > 64 || !/^OS-[0-9]+$/.test(id) || /\s/.test(id)) return { data: null, error: null };
+      if (typeof id !== 'string' || id.length > 64 || !/^OS-[0-9]+(-G[0-9]+)?$/.test(id) || /\s/.test(id)) return { data: null, error: null };
       restoreTables();
       const order = tables.ordenes.find((row) => row.id === id);
       if (!order) return { data: null, error: null };

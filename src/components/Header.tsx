@@ -1,7 +1,12 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Search, Plus, Bell, Command, CheckCircle2, AlertTriangle, ShieldCheck, X, LogOut, Lock, Menu } from 'lucide-react';
 
+import type { ShiftRole } from '../lib/operations';
 interface HeaderProps {
+  warrantyNotifications?: {id:string; technician:string}[];
+  onOpenWarranty?: (id:string)=>void;
+  shiftRole?: ShiftRole;
+  onShiftRoleChange?: (role: ShiftRole) => void;
   globalSearch: string;
   setGlobalSearch: (q: string) => void;
   onOpenNewOrder: () => void;
@@ -14,6 +19,8 @@ interface HeaderProps {
 }
 
 export const Header: React.FC<HeaderProps> = ({
+  warrantyNotifications = [], onOpenWarranty,
+  shiftRole = 'administrador', onShiftRoleChange,
   globalSearch,
   setGlobalSearch,
   onOpenNewOrder,
@@ -40,6 +47,7 @@ export const Header: React.FC<HeaderProps> = ({
 
   return (
     <header className="border-b border-zinc-800/80 bg-[#161619] px-3 md:px-6 py-2.5 flex flex-col xl:flex-row xl:items-center justify-between gap-2.5 sticky top-0 z-20">
+      <label className="text-xs shrink-0">Perfil del turno<select aria-label="Perfil del turno" value={shiftRole} onChange={e=>onShiftRoleChange?.(e.target.value as ShiftRole)} className="block bg-zinc-800 p-2 rounded"><option value="recepcion">Recepción / Mostrador</option><option value="tecnico">Técnico Laboratorio</option><option value="administrador">Administrador</option></select></label>
       <div role="group" aria-label="Modo de operación" className="flex shrink-0 rounded-xl border border-zinc-700 bg-zinc-950 p-1">
         <button type="button" aria-pressed={viewMode === 'recepcion'} onClick={() => onViewModeChange('recepcion')} className={`min-h-11 flex-1 whitespace-nowrap px-3 rounded-lg text-xs font-semibold transition-colors ${viewMode === 'recepcion' ? 'bg-zinc-100 text-zinc-950' : 'text-zinc-400 hover:text-white'}`}>🖥️ Recepción</button>
         <button type="button" aria-pressed={viewMode === 'taller'} onClick={() => onViewModeChange('taller')} className={`min-h-11 flex-1 whitespace-nowrap px-3 rounded-lg text-xs font-semibold transition-colors ${viewMode === 'taller' ? 'bg-teal-400 text-zinc-950' : 'text-zinc-400 hover:text-white'}`}>📱 Modo Taller</button>
@@ -77,10 +85,10 @@ export const Header: React.FC<HeaderProps> = ({
               title="Notificaciones y Alertas"
             >
               <Bell className="w-4 h-4" />
-              {urgentOrdersCount > 0 && (
+              {urgentOrdersCount + warrantyNotifications.length > 0 && (
                 <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-rose-500 animate-ping"></span>
               )}
-              {urgentOrdersCount > 0 && (
+              {urgentOrdersCount + warrantyNotifications.length > 0 && (
                 <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-rose-500"></span>
               )}
             </button>
@@ -92,6 +100,7 @@ export const Header: React.FC<HeaderProps> = ({
                   <span className="text-[10px] font-mono text-zinc-400 uppercase">En tiempo real</span>
                 </div>
                 <div className="space-y-2 max-h-64 overflow-y-auto">
+                  {warrantyNotifications.map(item=><button key={item.id} onClick={()=>{onOpenWarranty?.(item.id);setShowNotifications(false);}} className="block w-full text-left p-3 rounded bg-purple-950 text-purple-200">{item.id} · Reingreso por garantía para {item.technician}</button>)}
                   <div className="p-2.5 rounded-lg bg-[#1c1c20] border border-zinc-800/80 text-xs flex gap-2.5 items-start">
                     <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
                     <div>

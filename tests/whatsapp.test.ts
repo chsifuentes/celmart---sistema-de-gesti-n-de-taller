@@ -33,14 +33,14 @@ test('automation POST sends the agreed webhook contract and configured authentic
   assert.equal(fetchMock.mock.callCount(), 1);
   const [url, init] = fetchMock.mock.calls[0].arguments;
   assert.equal(url, config.whatsappApiUrl);
-  assert.equal(init.method, 'POST');
-  assert.equal(init.credentials, 'omit');
-  assert.ok(init.signal instanceof AbortSignal);
-  assert.deepEqual(init.headers, {
+  assert.equal(init!.method, 'POST');
+  assert.equal(init!.credentials, 'omit');
+  assert.ok(init!.signal instanceof AbortSignal);
+  assert.deepEqual(init!.headers, {
     Accept: 'application/json', apikey: 'limited-test-key',
     Authorization: 'Bearer limited-test-key', 'Content-Type': 'application/json',
   });
-  assert.deepEqual(JSON.parse(init.body as string), {
+  assert.deepEqual(JSON.parse(init!.body as string), {
     phone: formatWhatsAppPhone(order.cliente.telefono), message,
     orderId: order.id, instance: 'celmart-test', mediaUrls: order.fotosEvidencia,
   });
@@ -91,7 +91,7 @@ test('API timeout aborts the request and warns that delivery is unconfirmed', as
   t.mock.timers.enable({ apis: ['setTimeout'] });
   let signal: AbortSignal | undefined;
   t.mock.method(globalThis, 'fetch', (_url: string, init: RequestInit) => new Promise<Response>((_resolve, reject) => {
-    signal = init.signal!;
+    signal = init!.signal!;
     signal.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')));
   }));
   const resultPromise = sendAutomatedWhatsApp(order, 'Mensaje', config);
@@ -107,17 +107,17 @@ test('orders without evidence and key use an empty media list and no authorizati
   const fetchMock = t.mock.method(globalThis, 'fetch', async (_url: string, _init: RequestInit) => new Response(null, { status: 204 }));
   await sendAutomatedWhatsApp({ ...order, fotosEvidencia: undefined }, 'Mensaje', { ...config, whatsappApiKey: '', whatsappInstancia: undefined });
   const init = fetchMock.mock.calls[0].arguments[1];
-  assert.deepEqual(init.headers, { Accept: 'application/json', 'Content-Type': 'application/json' });
-  assert.deepEqual(JSON.parse(init.body as string).mediaUrls, []);
+  assert.deepEqual(init!.headers, { Accept: 'application/json', 'Content-Type': 'application/json' });
+  assert.deepEqual(JSON.parse(init!.body as string).mediaUrls, []);
 });
 
 test('connection check uses HEAD and never submits a message body or a phone', async (t) => {
   const fetchMock = t.mock.method(globalThis, 'fetch', async (_url: string, _init: RequestInit) => new Response(null, { status: 204 }));
   assert.deepEqual(await testWhatsAppConnection(config), { reachable: true, status: 204 });
   const init = fetchMock.mock.calls[0].arguments[1];
-  assert.equal(init.method, 'HEAD');
-  assert.equal(init.body, undefined);
-  assert.equal(init.cache, 'no-store');
+  assert.equal(init!.method, 'HEAD');
+  assert.equal(init!.body, undefined);
+  assert.equal(init!.cache, 'no-store');
 });
 
 test('connection check reports unsupported HEAD and browser network failures explicitly', async (t) => {

@@ -138,6 +138,10 @@ export interface Order {
   garantiaDias: number;
   fechaEntregaEstimada?: string;
   fechaEntrega?: string;
+  metodoPago?: 'Efectivo' | 'Transferencia';
+  montoCobrado?: number;
+  parentOrderId?: string;
+  motivoGarantia?: string;
 }
 
 export interface Technician {

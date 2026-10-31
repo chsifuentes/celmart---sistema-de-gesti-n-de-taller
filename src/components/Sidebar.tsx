@@ -11,9 +11,10 @@ import {
   X 
 } from 'lucide-react';
 
-export type TabType = 'dashboard' | 'clientes' | 'inventario' | 'reportes' | 'configuraciones';
+export type TabType = 'dashboard' | 'clientes' | 'inventario' | 'reportes' | 'configuraciones' | 'caja';
 
 interface SidebarProps {
+  administrator?: boolean;
   activeTab: TabType;
   setActiveTab: (tab: TabType) => void;
   collapsed: boolean;
@@ -25,6 +26,7 @@ interface SidebarProps {
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
+  administrator = true,
   activeTab,
   setActiveTab,
   collapsed,
@@ -63,7 +65,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
       label: 'Configuraciones',
       icon: Settings,
     },
-  ];
+    { id: 'caja' as TabType, label: 'Corte de Caja', icon: BarChart3 },
+  ].filter(item => administrator || !['reportes','configuraciones','caja'].includes(item.id));
 
   return (
     <>

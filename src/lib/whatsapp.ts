@@ -96,6 +96,7 @@ export function buildDeliveryWhatsAppMessage(order: Order, config: WorkshopConfi
     `Cliente: ${order.cliente.nombre}`,
     `Equipo: ${[order.dispositivo.marca, order.dispositivo.modelo].filter(Boolean).join(' ')}`,
     `Fecha de entrega: ${deliveryDate}`,
+    ...(order.metodoPago ? [`Método de pago: ${order.metodoPago}`, `Cobrado: ${money(order.montoCobrado ?? 0)}`] : []),
     '',
     `Mano de obra: ${money(order.costoManoObra)}`,
     'Refacciones:',

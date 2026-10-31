@@ -155,6 +155,7 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({ order,
               <div className="flex justify-between gap-2 font-bold text-[11px] pt-1 border-t border-zinc-300"><span>{isDelivery ? 'TOTAL DEL SERVICIO:' : 'TOTAL ESTIMADO:'}</span><span className="shrink-0">{money(totalCobro)} MXN</span></div>
             </div>
 
+            {order.metodoPago && <p className="text-[9px]">Cobrado: {money(order.montoCobrado??0)} · {order.metodoPago}</p>}
             <div className="py-3 text-center border-b border-dashed border-zinc-400" style={{ breakInside: 'avoid' }}>
               <p className="text-[10px] font-bold">Sigue tu reparación</p>
               <QRCodeSVG value={trackingUrl} size={144} level="M" marginSize={4} bgColor="#ffffff" fgColor="#000000" title={`Seguimiento de la orden ${order.id}`} style={{ width: '32mm', height: '32mm', margin: '1mm auto', display: 'block' }} />

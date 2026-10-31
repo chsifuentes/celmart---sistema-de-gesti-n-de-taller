@@ -177,6 +177,7 @@ function WorkshopOrderCard({ order, onSelectOrder, onUpdateStatus, onAddPhoto, o
           <span className="mt-1 block text-sm text-zinc-400">{order.cliente.nombre}</span>
         </button>
 
+        {(order.parentOrderId || order.estado==='Garantía') && <span className="inline-block bg-purple-900 text-purple-200 px-3 py-1 rounded-full text-xs">Garantía Activa · {order.parentOrderId || order.id}</span>}
         <p className="text-base leading-relaxed text-zinc-200 break-words">{order.fallaDeclarada || 'Revisar falla con recepción.'}</p>
 
         <div className="rounded-xl bg-black/25 border border-zinc-800 p-3 flex items-center gap-3">

@@ -61,7 +61,11 @@ function EvidencePreview({ url, onClose }: { url: string; onClose: () => void })
   );
 }
 
+import { OrderOperations } from './OrderOperations';
+import type { PaymentMethod } from '../lib/operations';
 interface DeviceDetailDrawerProps {
+  onPayment?: (id:string,method:PaymentMethod,amount:number)=>Promise<void>;
+  onWarranty?: (id:string,reason:string)=>Promise<void>;
   order: Order | null;
   isOpen: boolean;
   onClose: () => void;
@@ -77,6 +81,7 @@ interface DeviceDetailDrawerProps {
 }
 
 export const DeviceDetailDrawer: React.FC<DeviceDetailDrawerProps> = ({
+  onPayment,onWarranty,
   order,
   isOpen,
   onClose,
@@ -308,6 +313,7 @@ export const DeviceDetailDrawer: React.FC<DeviceDetailDrawerProps> = ({
           <p role="alert" className="px-5 py-3 text-xs text-rose-300 bg-rose-950/30 border-b border-rose-900/50">{saveError.message}</p>
         )}
 
+        {onPayment && onWarranty && <OrderOperations key={order.id} order={order} onPayment={onPayment} onWarranty={onWarranty}/> }
         {/* Tab Navigation */}
         <div className="flex border-b border-zinc-800/80 text-xs font-medium px-4 gap-2 bg-[#111114]">
           {[

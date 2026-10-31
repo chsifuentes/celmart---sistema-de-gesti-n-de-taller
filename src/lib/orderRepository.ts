@@ -33,6 +33,8 @@ export function mapOrderRow(row: Record<string, any>): Order {
     totalEstimado: Number(row.total_estimado ?? 0),
     garantiaDias: row.garantia_dias ?? 30,
     fechaEntrega: row.entregado_at ?? undefined,
+    metodoPago: row.metodo_pago ?? undefined, montoCobrado: row.monto_cobrado == null ? undefined : Number(row.monto_cobrado),
+    parentOrderId: row.parent_order_id ?? undefined, motivoGarantia: row.motivo_garantia ?? undefined,
   };
 }
 
