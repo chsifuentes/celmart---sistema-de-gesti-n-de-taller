@@ -73,6 +73,7 @@ revoke all on function public.resumen_caja(date),public.cerrar_caja(numeric,text
 grant execute on function public.resumen_caja(date),public.cerrar_caja(numeric,text),public.reingreso_garantia(text,text),public.asignar_repuesto(text,text,integer) to authenticated;
 create or replace function celmart_private.guard_payment() returns trigger language plpgsql set search_path='' as $$
 begin
+ if old.estado='Entregado' and new.estado is distinct from 'Entregado' then raise exception 'La entrega original se conserva. Registra una suborden por garantía'; end if;
  if new.estado='Entregado' and old.estado is distinct from 'Entregado' then
   perform pg_advisory_xact_lock(hashtext('celmart-caja-'||(now() at time zone 'America/Mexico_City')::date::text));
   if new.metodo_pago is null or new.monto_cobrado is null then raise exception 'Registra método e importe del cobro'; end if;

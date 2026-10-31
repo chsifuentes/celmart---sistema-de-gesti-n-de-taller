@@ -421,6 +421,7 @@ export default function App() {
     const previous = orders.find((order) => order.id === orderId);
     if (!previous) throw new Error('La orden no está disponible. Vuelve a sincronizar.');
     if (previous.estado === newStatus) return;
+    if (previous.estado==='Entregado') throw new Error('La entrega original se conserva. Usa Registrar Reingreso por Garantía.');
     if (newStatus === 'Entregado' && (!previous.metodoPago || previous.montoCobrado == null)) { setSelectedOrderForDrawer(previous); throw new Error('Registra el método y el importe cobrado en la ficha antes de entregar.'); }
     if (newStatus === 'Entregado' && previous.estado !== 'Listo') {
       throw new Error('Marca el equipo como Listo antes de registrar su entrega.');
@@ -440,6 +441,7 @@ export default function App() {
 
   // Eliminar orden definitivamente de la base de datos
   const handleDeleteOrder = async (orderId: string) => {
+    if(orders.find(o=>o.id===orderId)?.estado==='Entregado'){setDataError('Las entregas con historial financiero se conservan.');return;}
     setOrders((prev) => prev.filter((o) => o.id !== orderId));
     if (selectedOrderForDrawer?.id === orderId) setSelectedOrderForDrawer(null);
     if (selectedOrderForPrint?.id === orderId) setSelectedOrderForPrint(null);
