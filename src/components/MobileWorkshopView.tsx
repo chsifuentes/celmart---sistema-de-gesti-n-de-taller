@@ -1,19 +1,36 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { ArrowRight, Camera, CheckCheck, ClipboardList, FilePenLine, Inbox, LoaderCircle, LockKeyhole, MessageCircle, Wrench } from 'lucide-react';
-import type { Order, OrderStatus, TechNote, WhatsAppTemplateKey } from '../types';
+import {
+  ArrowRight,
+  Camera,
+  Check,
+  CheckCheck,
+  ClipboardList,
+  FilePenLine,
+  LoaderCircle,
+  MessageCircle,
+  Plus,
+  Tag,
+  Wrench,
+} from 'lucide-react';
+import type {
+  Order,
+  OrderStatus,
+  TechNote,
+  WhatsAppTemplateKey,
+} from '../types';
 import { uploadWorkshopPhoto } from '../lib/imageStorage';
 import { determineTemplateKeyForStatus } from '../lib/whatsapp';
+import { assignedTo, orderTiming } from '../lib/workbench';
 
-import {assignedTo,orderTiming} from '../lib/workbench';
-import {LocationControl} from './LocationControl';
 export type WorkshopLane = 'cola' | 'mesa' | 'listos';
+export type WorkshopFilter = 'all' | 'mine' | 'urgent';
 
 export interface MobileWorkshopViewProps {
   selectedTechnician?: string;
   technicians?: { nombre: string }[];
   onTechnicianChange?: (name: string) => void;
-  onSaveLocation?: (id:string,value:string)=>Promise<void>;
-  onPrintLabel?: (order:Order)=>void;
+  onSaveLocation?: (id: string, value: string) => Promise<void>;
+  onPrintLabel?: (order: Order) => void;
   orders: Order[];
   searchQuery: string;
   onSearchChange: (value: string) => void;
@@ -21,112 +38,212 @@ export interface MobileWorkshopViewProps {
   onSelectOrder: (order: Order) => void;
   onUpdateStatus: (orderId: string, status: OrderStatus) => Promise<void>;
   onAddPhoto: (orderId: string, photoUrl: string) => Promise<void>;
-  onAddNote: (orderId: string, content: string, type: TechNote['tipo']) => Promise<void>;
+  onAddNote: (
+    orderId: string,
+    content: string,
+    type: TechNote['tipo']
+  ) => Promise<void>;
   onOpenWhatsApp: (order: Order, templateKey?: WhatsAppTemplateKey) => void;
   onDeliveryReceipt?: (order: Order) => void;
   lastDeliveredOrder?: Order | null;
 }
 
 export function getWorkshopLane(status: OrderStatus): WorkshopLane | null {
-  if (['Recibido', 'En Diagnóstico', 'Esperando Presupuesto', 'Garantía'].includes(status)) return 'cola';
-  if (['En Reparación', 'Esperando Repuesto'].includes(status)) return 'mesa';
+  // Warranty reentries remain visible alongside the diagnostic queue.
+  if (['Recibido', 'En Diagnóstico', 'Garantía'].includes(status))
+    return 'cola';
+  if (
+    ['En Reparación', 'Esperando Repuesto', 'Esperando Presupuesto'].includes(
+      status
+    )
+  )
+    return 'mesa';
   return status === 'Listo' ? 'listos' : null;
 }
 
-const normalizeSearch = (value: string) => value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLocaleLowerCase().trim();
+const normalizeSearch = (value: string) =>
+  value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLocaleLowerCase()
+    .trim();
 
-export function filterWorkshopOrders(orders: Order[], lane: WorkshopLane, search: string): Order[] {
-  const term = normalizeSearch(search);
-  return orders.filter((order) => {
-    if (getWorkshopLane(order.estado) !== lane) return false;
-    if (!term) return true;
-    return normalizeSearch([
-      order.id, order.cliente.nombre, order.cliente.telefono, order.dispositivo.marca,
-      order.dispositivo.modelo, order.dispositivo.imei, order.dispositivo.categoria,
-      order.tecnico?.nombre, order.fallaDeclarada, order.estado,
-    ].filter(Boolean).join(' ')).includes(term);
-  }).sort((a, b) => Number(Boolean(b.prioridadUrgente)) - Number(Boolean(a.prioridadUrgente)));
-}
-
-type StatusAction = { status: OrderStatus; label: string };
-
-export function getWorkshopActions(status: OrderStatus): StatusAction[] {
-  switch (status) {
-    case 'Recibido': return [{ status: 'En Diagnóstico', label: 'Iniciar diagnóstico' }];
-    case 'En Diagnóstico': return [
-      { status: 'Esperando Presupuesto', label: 'Pasar a presupuesto' },
-      { status: 'En Reparación', label: 'Pasar a reparación' },
-    ];
-    case 'Esperando Presupuesto': return [
-      { status: 'En Reparación', label: 'Aprobado · reparar' },
-      { status: 'Esperando Repuesto', label: 'Aprobado · pedir repuesto' },
-    ];
-    case 'Garantía': return [{ status: 'En Diagnóstico', label: 'Revisar garantía' }];
-    case 'Esperando Repuesto': return [{ status: 'En Reparación', label: 'Llegó el repuesto · reparar' }];
-    case 'En Reparación': return [
-      { status: 'Listo', label: 'Marcar listo para entregar' },
-      { status: 'Esperando Repuesto', label: 'Esperando repuesto' },
-    ];
-    case 'Listo': return [{ status: 'Entregado', label: 'Marcar entregado' }];
-    default: return [];
-  }
-}
-
-export function getOrderUnlock(order: Order): { label: string; value: string; points: number[] } {
-  const key = order.dispositivo.claveBloqueo?.trim() || '';
-  const savedPoints = order.dispositivo.patronPuntos || [];
-  const parsedPoints = /^patr[oó]n\b/i.test(key) ? (key.match(/\d+/g) || []).map(Number) : [];
-  const points = (savedPoints.length ? savedPoints : parsedPoints).filter((point) => Number.isInteger(point) && point >= 1 && point <= 9);
-  if (points.length) return { label: 'Patrón', value: points.join(' → '), points };
-  if (order.dispositivo.tipoBloqueo === 'Ninguno' || /^sin (contraseña|clave|bloqueo)$/i.test(key)) {
-    return { label: 'Acceso', value: 'Sin bloqueo', points: [] };
-  }
-  return { label: order.dispositivo.tipoBloqueo === 'Patrón' ? 'Patrón' : 'PIN / clave', value: key || 'Sin registrar', points: [] };
-}
-
-function UnlockPattern({ points }: { points: number[] }) {
-  const coordinates = (point: number) => `${16 + ((point - 1) % 3) * 28},${16 + Math.floor((point - 1) / 3) * 28}`;
-  return (
-    <svg viewBox="0 0 88 88" className="w-[88px] h-[88px] shrink-0" role="img" aria-label={`Patrón: ${points.join(', ')}`}>
-      <polyline points={points.map(coordinates).join(' ')} fill="none" stroke="#2dd4bf" strokeWidth="3" strokeLinejoin="round" />
-      {Array.from({ length: 9 }, (_, index) => {
-        const point = index + 1;
-        const x = 16 + (index % 3) * 28;
-        const y = 16 + Math.floor(index / 3) * 28;
-        const selected = points.includes(point);
-        return (
-          <g key={point}>
-            <circle cx={x} cy={y} r="10" fill={selected ? '#134e4a' : '#27272a'} stroke={selected ? '#2dd4bf' : '#52525b'} />
-            <text x={x} y={y + 3.5} textAnchor="middle" fill={selected ? '#ccfbf1' : '#a1a1aa'} fontSize="10">{point}</text>
-          </g>
-        );
-      })}
-    </svg>
+export function getVisibleWorkshopOrders(
+  orders: Order[],
+  filter: WorkshopFilter,
+  technician: string
+): Order[] {
+  return orders.filter(
+    (order) =>
+      getWorkshopLane(order.estado) !== null &&
+      (filter !== 'mine' || assignedTo(order, technician)) &&
+      (filter !== 'urgent' || Boolean(order.prioridadUrgente))
   );
 }
 
-type OrderCardProps = Pick<MobileWorkshopViewProps, 'onSelectOrder' | 'onUpdateStatus' | 'onAddPhoto' | 'onAddNote' | 'onOpenWhatsApp' | 'onSaveLocation' | 'onPrintLabel'> & {
-  now: Date;
-  order: Order;
-  onStatusChanged: (message: string) => void;
-};
+export function filterWorkshopOrders(
+  orders: Order[],
+  lane: WorkshopLane,
+  search: string
+): Order[] {
+  const term = normalizeSearch(search);
+  return orders
+    .filter(
+      (order) =>
+        getWorkshopLane(order.estado) === lane &&
+        (!term ||
+          normalizeSearch(
+            [
+              order.id,
+              order.cliente.nombre,
+              order.cliente.telefono,
+              order.dispositivo.marca,
+              order.dispositivo.modelo,
+              order.dispositivo.imei,
+              order.dispositivo.categoria,
+              order.tecnico?.nombre,
+              order.fallaDeclarada,
+              order.estado,
+              order.ubicacionFisica,
+            ]
+              .filter(Boolean)
+              .join(' ')
+          ).includes(term))
+    )
+    .sort(
+      (a, b) =>
+        Number(Boolean(b.prioridadUrgente)) -
+        Number(Boolean(a.prioridadUrgente))
+    );
+}
 
-// Defined outside the view so live order updates preserve open notes and camera state.
-function WorkshopOrderCard({ now,onSaveLocation,onPrintLabel,order, onSelectOrder, onUpdateStatus, onAddPhoto, onAddNote, onOpenWhatsApp, onStatusChanged }: OrderCardProps) {
-  const [pending, setPending] = useState<'photo' | 'note' | 'status' | null>(null);
+type StatusAction = { status: OrderStatus; label: string };
+export function getWorkshopActions(status: OrderStatus): StatusAction[] {
+  switch (status) {
+    case 'Recibido':
+      return [{ status: 'En Diagnóstico', label: 'Iniciar diagnóstico' }];
+    case 'En Diagnóstico':
+      return [
+        { status: 'Esperando Presupuesto', label: 'Pasar a presupuesto' },
+        { status: 'En Reparación', label: 'Pasar a reparación' },
+      ];
+    case 'Esperando Presupuesto':
+      return [
+        { status: 'En Reparación', label: 'Aprobado · reparar' },
+        { status: 'Esperando Repuesto', label: 'Aprobado · pedir repuesto' },
+      ];
+    case 'Garantía':
+      return [{ status: 'En Diagnóstico', label: 'Revisar garantía' }];
+    case 'Esperando Repuesto':
+      return [
+        { status: 'En Reparación', label: 'Llegó el repuesto · reparar' },
+      ];
+    case 'En Reparación':
+      return [
+        { status: 'Listo', label: 'Marcar listo para entregar' },
+        { status: 'Esperando Repuesto', label: 'Esperando repuesto' },
+      ];
+    case 'Listo':
+      return [{ status: 'Entregado', label: 'Marcar entregado' }];
+    default:
+      return [];
+  }
+}
+
+export function getOrderUnlock(order: Order): {
+  label: string;
+  value: string;
+  points: number[];
+} {
+  const key = order.dispositivo.claveBloqueo?.trim() || '';
+  const savedPoints = order.dispositivo.patronPuntos || [];
+  const parsedPoints = /^patr[oó]n\b/i.test(key)
+    ? (key.match(/\d+/g) || []).map(Number)
+    : [];
+  const points = (savedPoints.length ? savedPoints : parsedPoints).filter(
+    (point) => Number.isInteger(point) && point >= 1 && point <= 9
+  );
+  if (points.length)
+    return { label: 'Patrón', value: points.join(' → '), points };
+  if (
+    order.dispositivo.tipoBloqueo === 'Ninguno' ||
+    /^sin (contraseña|clave|bloqueo)$/i.test(key)
+  )
+    return { label: 'Acceso', value: 'Sin bloqueo', points: [] };
+  return {
+    label:
+      order.dispositivo.tipoBloqueo === 'Patrón' ? 'Patrón' : 'PIN / clave',
+    value: key || 'Sin registrar',
+    points: [],
+  };
+}
+
+const ADVANCE_LABEL: Partial<Record<OrderStatus, string>> = {
+  'En Diagnóstico': 'Diagnóstico',
+  'Esperando Presupuesto': 'Presupuesto',
+  'En Reparación': 'Reparar',
+  'Esperando Repuesto': 'Esperar pieza',
+  Listo: 'Marcar listo',
+  Entregado: 'Entregar',
+};
+const secondary =
+  'inline-flex h-8 lg:h-7 items-center gap-1 rounded-md border border-zinc-800/80 bg-[#1c1c20] px-2 text-[11px] text-zinc-400 hover:border-zinc-700 hover:text-zinc-100 disabled:opacity-40';
+
+type OrderCardProps = Pick<
+  MobileWorkshopViewProps,
+  | 'onSelectOrder'
+  | 'onUpdateStatus'
+  | 'onAddPhoto'
+  | 'onAddNote'
+  | 'onOpenWhatsApp'
+  | 'onSaveLocation'
+  | 'onPrintLabel'
+> & { now: Date; order: Order };
+
+// Stable card identity preserves camera inputs and drafts through filter/tab changes.
+function WorkshopOrderCard({
+  now,
+  order,
+  onSelectOrder,
+  onUpdateStatus,
+  onAddPhoto,
+  onAddNote,
+  onOpenWhatsApp,
+  onSaveLocation,
+  onPrintLabel,
+}: OrderCardProps) {
+  const [pending, setPending] = useState<
+    'photo' | 'note' | 'status' | 'location' | null
+  >(null);
   const [error, setError] = useState('');
   const [feedback, setFeedback] = useState('');
   const [showNote, setShowNote] = useState(false);
   const [noteDraft, setNoteDraft] = useState('');
+  const [editingLocation, setEditingLocation] = useState(false);
+  const [location, setLocation] = useState(order.ubicacionFisica || '');
   const cameraInput = useRef<HTMLInputElement>(null);
   const busy = useRef(false);
   const unlock = getOrderUnlock(order);
   const actions = getWorkshopActions(order.estado);
+  const advance = actions[0];
   const photos = order.fotosEvidencia || [];
-  const isReady = order.estado === 'Listo';
-  const timing=orderTiming(order,now);
+  const timing = orderTiming(order, now);
+  const age = timing.label
+    .replace(/^Ingresó hace /, 'hace ')
+    .replace('menos de 1h', '<1h')
+    .replace(/(\d+) días?/, '$1d')
+    .replace('Ingreso sin fecha verificable', 'Sin fecha');
+  const warranty = Boolean(order.parentOrderId || order.estado === 'Garantía');
 
-  const runAction = async (kind: 'photo' | 'note' | 'status', action: () => Promise<void>, successMessage: string) => {
+  useEffect(() => {
+    if (!editingLocation) setLocation(order.ubicacionFisica || '');
+  }, [order.ubicacionFisica, editingLocation]);
+
+  const runAction = async (
+    kind: NonNullable<typeof pending>,
+    action: () => Promise<void>,
+    message: string
+  ) => {
     if (busy.current) return false;
     busy.current = true;
     setPending(kind);
@@ -134,203 +251,584 @@ function WorkshopOrderCard({ now,onSaveLocation,onPrintLabel,order, onSelectOrde
     setFeedback('');
     try {
       await action();
-      setFeedback(successMessage);
+      setFeedback(message);
       return true;
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'No se pudo guardar el cambio. Inténtalo de nuevo.');
+      setError(
+        cause instanceof Error
+          ? cause.message
+          : 'No se pudo guardar el cambio. Inténtalo de nuevo.'
+      );
       return false;
     } finally {
       busy.current = false;
       setPending(null);
     }
   };
-
   const receivePhoto = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0] as File | undefined;
+    const file = event.target.files?.[0];
     event.target.value = '';
     if (!file) return;
-    await runAction('photo', async () => {
-      const url = await uploadWorkshopPhoto(file, 'ordenes', order.id);
-      if (!url) throw new Error('No se pudo subir la foto. Revisa la conexión y vuelve a tomarla.');
-      await onAddPhoto(order.id, url);
-    }, 'Foto guardada en el expediente.');
+    await runAction(
+      'photo',
+      async () => {
+        const url = await uploadWorkshopPhoto(file, 'ordenes', order.id);
+        if (!url)
+          throw new Error('No se pudo preparar la foto. Vuelve a intentarlo.');
+        await onAddPhoto(order.id, url);
+      },
+      'Foto guardada.'
+    );
   };
-
   const saveNote = async (event: React.FormEvent) => {
     event.preventDefault();
-    const text = noteDraft.trim();
-    if (!text) return;
-    const saved = await runAction('note', () => onAddNote(order.id, text, 'reparacion'), 'Nota guardada.');
-    if (saved) {
+    if (!noteDraft.trim()) return;
+    if (
+      await runAction(
+        'note',
+        () => onAddNote(order.id, noteDraft.trim(), 'reparacion'),
+        'Nota guardada.'
+      )
+    ) {
       setNoteDraft('');
       setShowNote(false);
     }
   };
-
-  const advance = async (status: OrderStatus) => {
-    const saved = await runAction('status', () => onUpdateStatus(order.id, status), `Estado: ${status}`);
-    if (saved) onStatusChanged(`${order.id} · ${status}`);
+  const saveLocation = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!onSaveLocation || !location.trim()) return;
+    if (
+      await runAction(
+        'location',
+        () => onSaveLocation(order.id, location.trim()),
+        'Ubicación guardada.'
+      )
+    )
+      setEditingLocation(false);
+  };
+  const bodyClick = (event: React.MouseEvent<HTMLElement>) => {
+    if (
+      (event.target as Element).closest('button,input,textarea,select,a,form')
+    )
+      return;
+    onSelectOrder(order);
   };
 
   return (
-    <article className={`min-w-0 rounded-lg border bg-[#161619] overflow-hidden ${order.prioridadUrgente ? 'border-amber-500/70' : isReady ? 'border-emerald-700/60' : 'border-zinc-800/80'}`} aria-label={`Orden ${order.id}`}>
-      <div className={`px-4 py-2.5 flex flex-wrap justify-between gap-2 text-xs font-semibold ${isReady ? 'bg-emerald-950/40 text-emerald-300' : 'bg-[#111114] text-zinc-400'}`}>
-        <span className="font-mono text-sm text-zinc-100">{order.id}</span>
-        <span>{order.prioridadUrgente ? '⚡ URGENTE · ' : ''}{order.estado}</span>
-      </div>
-
-      <div className="p-4 space-y-4">
-        <button type="button" onClick={() => onSelectOrder(order)} className="w-full min-h-12 text-left rounded-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-400" aria-label={`Abrir expediente ${order.id}`}>
-          <span className="block text-[11px] text-zinc-400 uppercase tracking-wider">{order.dispositivo.categoria || 'Smartphone'} · {order.dispositivo.marca}</span>
-          <span className="mt-1 block text-sm leading-tight font-bold text-zinc-100 break-words">{order.dispositivo.modelo || 'Equipo sin modelo'}</span>
-          <span className="mt-1 block text-sm text-zinc-400">{order.cliente.nombre}</span>
-        </button>
-
-        {(order.parentOrderId || order.estado==='Garantía') && <span className="inline-block bg-purple-900 text-purple-200 px-3 py-1 rounded-full text-xs">Garantía Activa · {order.parentOrderId || order.id}</span>}
-        <p className={timing.stale?'text-amber-300 font-semibold':'text-xs text-zinc-400'}>{timing.label}{timing.stale?' · ⚠ Más de 48 h sin cambio de estado':''}{timing.statusUnknown?' · Estado sin fecha verificable':''}</p>
-        {onSaveLocation&&<LocationControl order={order} onSave={onSaveLocation}/>}
-        {onPrintLabel&&<button type="button" onClick={()=>onPrintLabel(order)} className="min-h-9 w-full border border-zinc-800/80 bg-[#1c1c20] rounded-md px-2 text-xs text-zinc-400">🏷️ Imprimir Etiqueta de Equipo</button>}
-        <p className="text-xs leading-relaxed text-zinc-200 break-words">{order.fallaDeclarada || 'Revisar falla con recepción.'}</p>
-
-        <div className="rounded-md bg-[#111114] border border-zinc-800/80 p-2.5 flex items-center gap-3">
-          {unlock.points.length ? <UnlockPattern points={unlock.points} /> : <LockKeyhole className="w-5 h-5 shrink-0 text-teal-400" />}
-          <div className="min-w-0">
-            <span className="block text-xs text-zinc-400">{unlock.label}</span>
-            <span className="block mt-1 font-mono font-semibold text-sm text-zinc-200 break-all select-all">{unlock.value}</span>
-          </div>
-        </div>
-
-        {photos.length > 0 && (
-          <button type="button" onClick={() => onSelectOrder(order)} className="w-full flex items-center gap-2 text-left min-h-14 rounded-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-400" aria-label={`Ver ${photos.length} fotos en el expediente ${order.id}`}>
-            {photos.slice(0, 3).map((url, index) => <img key={`${index}-${url}`} src={url} alt={`Evidencia ${index + 1}`} loading="lazy" className="w-14 h-14 object-cover rounded-lg border border-zinc-700" />)}
-            <span className="text-xs text-zinc-400 ml-auto">{photos.length} foto{photos.length === 1 ? '' : 's'}<br />Ver expediente →</span>
-          </button>
-        )}
-
-        <div className="flex justify-between gap-2 text-xs text-zinc-400">
-          <span className="truncate">{order.tecnico?.nombre || 'Sin técnico asignado'}</span>
-          <span className="shrink-0 font-mono">{order.ingreso}</span>
-        </div>
-
-        <input ref={cameraInput} type="file" accept="image/*" capture="environment" onChange={receivePhoto} disabled={pending !== null} className="hidden" aria-label={`Tomar foto para ${order.id}`} />
-        <div className="grid grid-cols-3 gap-2">
-          <button type="button" onClick={() => cameraInput.current?.click()} disabled={pending !== null} className="min-h-11 rounded-md border border-zinc-800/80 text-zinc-300 bg-[#1c1c20] active:bg-zinc-800 disabled:opacity-40 flex flex-col items-center justify-center gap-1.5 text-xs font-semibold">
-            {pending === 'photo' ? <LoaderCircle className="w-5 h-5 animate-spin" /> : <Camera className="w-5 h-5" />} + Foto
-          </button>
-          <button type="button" onClick={() => setShowNote((current) => !current)} disabled={pending !== null} aria-expanded={showNote} className="min-h-11 rounded-md border border-zinc-800/80 text-zinc-300 bg-[#1c1c20] active:bg-zinc-800 disabled:opacity-40 flex flex-col items-center justify-center gap-1.5 text-xs font-semibold">
-            <FilePenLine className="w-5 h-5" /> + Nota rápida
-          </button>
-          <button type="button" onClick={() => onOpenWhatsApp(order, determineTemplateKeyForStatus(order.estado))} disabled={pending !== null} aria-label={`WhatsApp al cliente de ${order.id}`} className="min-h-11 rounded-md border border-zinc-800/80 text-zinc-300 bg-[#1c1c20] active:bg-zinc-800 disabled:opacity-40 flex flex-col items-center justify-center gap-1.5 text-xs font-semibold">
-            <MessageCircle className="w-5 h-5" /><span className="text-xs">WhatsApp</span>
-          </button>
-        </div>
-
-        {showNote && (
-          <form onSubmit={saveNote} className="space-y-2">
-            <label className="text-xs text-zinc-400 block">
-              Avance de reparación
-              <textarea value={noteDraft} onChange={(event) => setNoteDraft(event.target.value)} disabled={pending !== null} rows={3} placeholder="Medición, diagnóstico o siguiente paso…" className="mt-2 block w-full rounded-md border border-zinc-800/80 bg-[#1c1c20] p-3 text-xs text-zinc-100 focus:outline-none focus:border-teal-500 disabled:opacity-50" />
-            </label>
-            <button type="submit" disabled={pending !== null || !noteDraft.trim()} className="w-full min-h-11 rounded-md bg-zinc-100 text-zinc-950 font-semibold disabled:opacity-40 flex items-center justify-center gap-2">
-              {pending === 'note' && <LoaderCircle className="w-4 h-4 animate-spin" />}{pending === 'note' ? 'Guardando nota…' : 'Guardar nota'}
+    <article
+      aria-label={`Orden ${order.id}`}
+      onClick={bodyClick}
+      className="min-w-0 rounded-lg border border-zinc-800/80 bg-[#161619] p-3 transition-colors hover:border-zinc-700"
+    >
+      <button
+        type="button"
+        aria-label={`Abrir expediente ${order.id}`}
+        onClick={() => onSelectOrder(order)}
+        className="block w-full min-w-0 text-left rounded-sm focus-visible:outline focus-visible:outline-1 focus-visible:outline-zinc-500"
+      >
+        <span className="flex items-center gap-1.5 min-w-0">
+          {order.prioridadUrgente && (
+            <span
+              aria-label="Urgente"
+              className="h-1.5 w-1.5 shrink-0 rounded-full bg-rose-500"
+            />
+          )}
+          <span className="font-mono text-[10px] text-zinc-200 shrink-0">
+            {order.id}
+          </span>
+          <span
+            title={order.dispositivo.categoria || 'Smartphone'}
+            className="max-w-[100px] truncate rounded border border-zinc-800/80 bg-[#111114] px-1 py-0.5 text-[9px] text-zinc-500"
+          >
+            {order.dispositivo.categoria || 'Smartphone'}
+          </span>
+          <span
+            title={
+              timing.stale
+                ? 'Más de 48 h sin cambio de estado'
+                : timing.statusUnknown
+                  ? 'Estado sin fecha verificable'
+                  : timing.label
+            }
+            className={`ml-auto shrink-0 font-mono text-[10px] ${timing.stale ? 'text-amber-400' : 'text-zinc-500'}`}
+          >
+            {timing.stale ? '⚠ ' : ''}
+            {age}
+          </span>
+        </span>
+        <span className="mt-2 flex items-baseline gap-2 min-w-0">
+          <span
+            title={`${order.dispositivo.marca} ${order.dispositivo.modelo}`}
+            className="min-w-0 truncate font-semibold text-xs text-zinc-100"
+          >
+            {order.dispositivo.marca}{' '}
+            {order.dispositivo.modelo || 'Equipo sin modelo'}
+          </span>
+          <span
+            title={order.cliente.nombre}
+            className="ml-auto max-w-[42%] truncate text-[11px] text-zinc-500"
+          >
+            {order.cliente.nombre}
+          </span>
+        </span>
+      </button>
+      <div className="mt-2 flex min-w-0 flex-wrap items-center gap-1.5 font-mono text-[10px]">
+        <span
+          title={`${unlock.label}: ${unlock.value}`}
+          className="max-w-full truncate rounded-md border border-zinc-800/80 bg-[#111114] px-1.5 py-1 text-zinc-300 select-all"
+        >
+          🔑 PIN/Patrón: {unlock.value}
+        </span>
+        {editingLocation ? (
+          <form
+            onSubmit={saveLocation}
+            className="inline-flex min-w-0 max-w-full gap-1"
+          >
+            <input
+              autoFocus
+              aria-label={`Ubicación física ${order.id}`}
+              placeholder="Gaveta B-04"
+              value={location}
+              maxLength={120}
+              required
+              disabled={pending !== null}
+              onChange={(event) => setLocation(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Escape') {
+                  setEditingLocation(false);
+                  setLocation(order.ubicacionFisica || '');
+                }
+              }}
+              className="min-w-0 w-28 rounded-md border border-zinc-700 bg-[#1c1c20] px-1.5 py-1 text-[10px] text-zinc-200 outline-none"
+            />
+            <button
+              type="submit"
+              aria-label={`Guardar ubicación ${order.id}`}
+              disabled={pending !== null || !location.trim()}
+              className="rounded-md border border-zinc-800/80 bg-[#1c1c20] px-1.5 text-zinc-300 hover:border-zinc-700 disabled:opacity-40"
+            >
+              <Check className="h-3 w-3" />
             </button>
           </form>
+        ) : (
+          <button
+            type="button"
+            title="Asignar ubicación física"
+            aria-label={`Editar ubicación ${order.id}`}
+            disabled={!onSaveLocation || pending !== null}
+            onClick={() => setEditingLocation(true)}
+            className="max-w-full truncate rounded-md border border-zinc-800/80 bg-[#1c1c20] px-1.5 py-1 text-zinc-400 hover:border-zinc-700 disabled:opacity-50"
+          >
+            📍 Ubicación: {order.ubicacionFisica || 'Sin asignar'}
+          </button>
         )}
-
-        {pending === 'photo' && <p role="status" className="text-xs text-teal-300">Comprimiendo y guardando foto…</p>}
-        {error && <p role="alert" className="rounded-lg p-3 bg-rose-950/40 border border-rose-800/60 text-sm text-rose-200">{error}</p>}
-        {feedback && <p role="status" className="text-xs text-teal-300">{feedback}</p>}
-
-        <div className="space-y-2">
-          {actions.map((action, index) => (
-            <button key={action.status} type="button" onClick={() => { void advance(action.status); }} disabled={pending !== null} className={`w-full min-h-11 px-3 rounded-md flex items-center justify-center gap-2 text-xs font-semibold disabled:opacity-40 ${index === 0 ? 'bg-zinc-100 text-zinc-950 active:bg-white' : 'border border-zinc-800/80 bg-[#1c1c20] text-zinc-300 active:bg-zinc-800'}`}>
-              {pending === 'status' ? <LoaderCircle className="w-5 h-5 animate-spin" /> : <ArrowRight className="w-5 h-5" />}
-              {pending === 'status' ? 'Guardando estado…' : action.label}
-            </button>
-          ))}
-        </div>
+        {warranty && (
+          <span className="rounded border border-purple-900/60 px-1 py-0.5 text-[9px] text-purple-300">
+            Garantía Activa
+          </span>
+        )}
       </div>
+      <p
+        title={order.fallaDeclarada}
+        className="mt-2 truncate text-[11px] text-zinc-500"
+      >
+        {order.fallaDeclarada || 'Revisar falla con recepción.'}
+      </p>
+      <div className="mt-2 flex min-w-0 items-center justify-between gap-2 border-t border-zinc-800/80 pt-2">
+        <span className="min-w-0 truncate text-[10px] text-zinc-500">
+          {order.estado} · {order.tecnico?.nombre || 'Sin técnico'}
+        </span>
+        {photos.length > 0 && (
+          <button
+            type="button"
+            onClick={() => onSelectOrder(order)}
+            aria-label={`Ver ${photos.length} fotos en el expediente ${order.id}`}
+            className="flex shrink-0 items-center gap-1"
+          >
+            {photos.slice(0, 3).map((url, index) => (
+              <img
+                key={`${index}-${url}`}
+                src={url}
+                alt={`Evidencia ${index + 1}`}
+                loading="lazy"
+                className="h-6 w-6 rounded-md border border-zinc-800/80 object-cover"
+              />
+            ))}
+            {photos.length > 3 && (
+              <span className="text-[10px] font-mono text-zinc-500">
+                +{photos.length - 3}
+              </span>
+            )}
+          </button>
+        )}
+      </div>
+      <input
+        ref={cameraInput}
+        type="file"
+        accept="image/*"
+        capture="environment"
+        onChange={receivePhoto}
+        disabled={pending !== null}
+        className="hidden"
+        aria-label={`Tomar foto para ${order.id}`}
+      />
+      <div className="mt-2 flex flex-wrap items-center gap-1.5">
+        <button
+          type="button"
+          onClick={() => cameraInput.current?.click()}
+          disabled={pending !== null}
+          className={secondary}
+        >
+          {pending === 'photo' ? (
+            <LoaderCircle className="h-3 w-3 animate-spin" />
+          ) : (
+            <Camera className="h-3 w-3" />
+          )}
+          +Foto
+        </button>
+        {onPrintLabel && (
+          <button
+            type="button"
+            onClick={() => onPrintLabel(order)}
+            className={secondary}
+            title="Imprimir etiqueta de equipo"
+          >
+            <Tag className="h-3 w-3" />
+            Etiqueta
+          </button>
+        )}
+        <button
+          type="button"
+          onClick={() =>
+            onOpenWhatsApp(order, determineTemplateKeyForStatus(order.estado))
+          }
+          disabled={pending !== null}
+          aria-label={`WhatsApp al cliente de ${order.id}`}
+          className={secondary}
+        >
+          <MessageCircle className="h-3 w-3" />
+          WA
+        </button>
+        <button
+          type="button"
+          onClick={() => setShowNote((current) => !current)}
+          disabled={pending !== null}
+          aria-label={`Nota técnica ${order.id}`}
+          aria-expanded={showNote}
+          title="Nota técnica rápida"
+          className={secondary}
+        >
+          <FilePenLine className="h-3 w-3" />
+        </button>
+        {advance && (
+          <button
+            type="button"
+            aria-label={advance.label}
+            title={advance.label}
+            onClick={() => {
+              void runAction(
+                'status',
+                () => onUpdateStatus(order.id, advance.status),
+                `Estado: ${advance.status}`
+              );
+            }}
+            disabled={pending !== null}
+            className="ml-auto inline-flex h-8 items-center gap-1 rounded-md bg-zinc-100 px-3.5 py-2 text-xs font-semibold text-zinc-950 hover:bg-white disabled:opacity-40"
+          >
+            {pending === 'status' ? (
+              <LoaderCircle className="h-3 w-3 animate-spin" />
+            ) : (
+              <ArrowRight className="h-3 w-3" />
+            )}
+            {ADVANCE_LABEL[advance.status] || advance.label}
+          </button>
+        )}
+      </div>
+      {showNote && (
+        <form onSubmit={saveNote} className="mt-2 space-y-2">
+          <textarea
+            aria-label={`Nota de reparación ${order.id}`}
+            value={noteDraft}
+            onChange={(event) => setNoteDraft(event.target.value)}
+            disabled={pending !== null}
+            rows={2}
+            placeholder="Medición, diagnóstico o siguiente paso…"
+            className="block w-full rounded-md border border-zinc-800/80 bg-[#1c1c20] px-2 py-1.5 text-xs text-zinc-200 outline-none focus:border-zinc-700"
+          />
+          <button
+            type="submit"
+            disabled={pending !== null || !noteDraft.trim()}
+            className="rounded-md bg-zinc-100 px-3.5 py-2 text-xs font-semibold text-zinc-950 disabled:opacity-40"
+          >
+            Guardar nota
+          </button>
+        </form>
+      )}
+      {error && (
+        <p role="alert" className="mt-2 text-[11px] text-rose-300">
+          {error}
+        </p>
+      )}
+      {feedback && (
+        <p role="status" className="mt-2 text-[10px] text-zinc-500">
+          {feedback}
+        </p>
+      )}
     </article>
   );
 }
 
 const LANES = [
-  { id: 'cola' as const, label: 'En cola', icon: ClipboardList, empty: 'No hay equipos pendientes de revisar.' },
-  { id: 'mesa' as const, label: 'En mesa', icon: Wrench, empty: 'No hay equipos en reparación o esperando repuesto.' },
-  { id: 'listos' as const, label: 'Listos', icon: CheckCheck, empty: 'Los equipos listos para entregar aparecerán aquí.' },
+  {
+    id: 'cola' as const,
+    label: 'Por Diagnosticar',
+    icon: ClipboardList,
+    empty: 'Sin equipos por diagnosticar.',
+  },
+  {
+    id: 'mesa' as const,
+    label: 'En Mesa / Espera',
+    icon: Wrench,
+    empty: 'Sin equipos en mesa o espera.',
+  },
+  {
+    id: 'listos' as const,
+    label: 'Listos para Entrega',
+    icon: CheckCheck,
+    empty: 'Sin equipos listos para entrega.',
+  },
 ];
 
-export function MobileWorkshopView({ selectedTechnician='',technicians=[],onTechnicianChange,orders, searchQuery, onSearchChange, onReceiveExpress, lastDeliveredOrder, onDeliveryReceipt, ...cardActions }: MobileWorkshopViewProps) {
-  const [mineOnly,setMineOnly]=useState(false);
-  const [now,setNow]=useState(()=>new Date());
-  useEffect(()=>{const timer=setInterval(()=>setNow(new Date()),60000);return()=>clearInterval(timer);},[]);
-  const assignedOrders=mineOnly?orders.filter(o=>assignedTo(o,selectedTechnician)):orders;
+export function MobileWorkshopView({
+  selectedTechnician = '',
+  technicians = [],
+  onTechnicianChange,
+  orders,
+  searchQuery,
+  onSearchChange,
+  onReceiveExpress,
+  lastDeliveredOrder,
+  onDeliveryReceipt,
+  ...cardActions
+}: MobileWorkshopViewProps) {
+  const [filter, setFilter] = useState<WorkshopFilter>('all');
   const [activeLane, setActiveLane] = useState<WorkshopLane>('cola');
-  const [statusNotice, setStatusNotice] = useState('');
-  const lanes = LANES.map((lane) => ({ ...lane, orders: filterWorkshopOrders(assignedOrders, lane.id, searchQuery) }));
-  const currentLane = lanes.find((lane) => lane.id === activeLane)!;
-  const visibleIds = new Set(currentLane.orders.map((order) => order.id));
-  const activeOrders = orders.filter((order) => getWorkshopLane(order.estado) !== null)
-    .sort((a, b) => Number(Boolean(b.prioridadUrgente)) - Number(Boolean(a.prioridadUrgente)));
+  const [now, setNow] = useState(() => new Date());
+  useEffect(() => {
+    const timer = setInterval(() => setNow(new Date()), 60000);
+    return () => clearInterval(timer);
+  }, []);
+  const filtered = getVisibleWorkshopOrders(orders, filter, selectedTechnician);
+  const lanes = LANES.map((lane) => ({
+    ...lane,
+    visible: filterWorkshopOrders(filtered, lane.id, searchQuery),
+  }));
+  const names =
+    technicians.some((tech) => tech.nombre === selectedTechnician) ||
+    !selectedTechnician
+      ? technicians
+      : [...technicians, { nombre: selectedTechnician }];
+  const deliveredDate =
+    lastDeliveredOrder?.fechaEntrega &&
+    Number.isFinite(Date.parse(lastDeliveredOrder.fechaEntrega))
+      ? lastDeliveredOrder.fechaEntrega
+      : null;
 
   return (
-    <div className="w-full max-w-5xl mx-auto px-3 py-4 sm:px-5 space-y-4 pb-8">
-      <div className="flex items-center justify-between gap-3">
-        <div>
-          <h1 className="text-sm font-semibold text-zinc-100">Mesa de trabajo</h1>
-          <p className="text-xs mt-1 text-zinc-400">La comanda del taller, siempre al día.</p>
+    <div className="w-full min-w-0 p-3 sm:p-4 space-y-3 text-xs">
+      <div className="flex min-w-0 flex-wrap items-center justify-between gap-2 lg:flex-nowrap">
+        <div className="flex min-w-0 flex-wrap items-center gap-2 lg:flex-nowrap">
+          <h1
+            title="Laboratorio & Mesa de Trabajo"
+            className="shrink-0 text-xs font-semibold text-zinc-100 lg:max-w-[160px] lg:truncate xl:max-w-none"
+          >
+            Laboratorio &amp; Mesa de Trabajo
+          </h1>
+          <div
+            role="group"
+            aria-label="Filtros de laboratorio"
+            className="inline-flex shrink-0 items-center gap-1"
+          >
+            {(
+              [
+                { id: 'all', label: 'Todos los activos' },
+                { id: 'mine', label: 'Mis asignados' },
+                { id: 'urgent', label: '🔥 Urgentes' },
+              ] as const
+            ).map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                aria-pressed={filter === item.id}
+                onClick={() => setFilter(item.id)}
+                className={`whitespace-nowrap rounded-md border px-2 py-1.5 text-[10px] transition-colors ${filter === item.id ? 'border-zinc-700 bg-[#1c1c20] text-zinc-100' : 'border-zinc-800/80 text-zinc-500 hover:border-zinc-700 hover:text-zinc-300'}`}
+              >
+                {item.label}
+              </button>
+            ))}
+          </div>
         </div>
-        <Wrench className="w-4 h-4 text-zinc-500 shrink-0" />
+        <div className="flex min-w-0 shrink-0 items-center gap-2">
+          <select
+            aria-label="Técnico activo del laboratorio"
+            value={selectedTechnician}
+            disabled={!onTechnicianChange}
+            onChange={(event) => onTechnicianChange?.(event.target.value)}
+            className="h-8 w-32 min-w-0 rounded-md border border-zinc-800/80 bg-[#1c1c20] px-2 text-[11px] text-zinc-400 outline-none focus:border-zinc-700 xl:w-40"
+          >
+            <option value="">Técnico activo</option>
+            {names.map((tech) => (
+              <option key={tech.nombre} value={tech.nombre}>
+                {tech.nombre}
+              </option>
+            ))}
+          </select>
+          <button
+            type="button"
+            onClick={onReceiveExpress}
+            className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-md bg-zinc-100 px-3.5 py-2 text-xs font-semibold text-zinc-950 hover:bg-white"
+          >
+            <Plus className="h-3.5 w-3.5" />
+            Recepción Rápida
+          </button>
+        </div>
       </div>
-
-      <button type="button" onClick={onReceiveExpress} className="w-full min-h-11 rounded-md bg-zinc-100 active:bg-white text-zinc-950 font-semibold flex items-center justify-center gap-3">
-        <Camera className="w-6 h-6" /><span className="text-xs">Recibir Equipo Exprés</span><ArrowRight className="w-5 h-5" />
-      </button>
-
-      <div className="flex flex-wrap items-center gap-2">
-        <button type="button" aria-pressed={mineOnly} onClick={()=>setMineOnly(!mineOnly)} className={`h-9 rounded-md border px-3 text-xs ${mineOnly?'bg-[#1c1c20] border-zinc-600 text-zinc-100':'border-zinc-800/80 text-zinc-400'}`}>Mis Equipos Asignados {mineOnly?'✓':''}</button>
-        {mineOnly&&onTechnicianChange&&<select aria-label="Técnico de mis equipos asignados" value={selectedTechnician} onChange={event=>onTechnicianChange(event.target.value)} className="h-9 max-w-full rounded-md border border-zinc-800/80 bg-[#1c1c20] px-2 text-xs text-zinc-300"><option value="">Seleccionar técnico</option>{technicians.map(technician=><option key={technician.nombre} value={technician.nombre}>{technician.nombre}</option>)}</select>}
-      </div>
-      {mineOnly&&!selectedTechnician&&<p role="status" className="text-xs text-zinc-500">Selecciona el técnico para ver sus equipos asignados.</p>}
-      <div className="grid grid-cols-3 gap-2" role="group" aria-label="Colas de trabajo">
-        {lanes.map(({ id, label, icon: Icon, orders: laneOrders }) => (
-          <button key={id} type="button" onClick={() => setActiveLane(id)} aria-pressed={activeLane === id} className={`min-h-11 px-2 py-2 rounded-md flex flex-col items-center justify-center gap-1 text-xs font-medium border ${activeLane === id ? 'bg-zinc-100 text-zinc-950 border-zinc-100' : 'bg-[#161619] text-zinc-400 border-zinc-800/80 active:bg-zinc-800'}`}>
-            <span className="flex gap-2 items-center"><Icon className="w-4 h-4" />{label}</span>
-            <span className="font-mono text-xs">{laneOrders.length} equipo{laneOrders.length === 1 ? '' : 's'}</span>
+      {filter === 'mine' && !selectedTechnician && (
+        <p role="status" className="text-[11px] text-zinc-500">
+          Selecciona el técnico activo para ver sus equipos asignados.
+        </p>
+      )}
+      <div
+        role="tablist"
+        aria-label="Columnas del laboratorio"
+        className="grid grid-cols-3 gap-1 rounded-md border border-zinc-800/80 bg-[#111114] p-1 lg:hidden"
+      >
+        {lanes.map((lane) => (
+          <button
+            key={lane.id}
+            type="button"
+            role="tab"
+            id={`lab-tab-${lane.id}`}
+            aria-controls={`lab-lane-${lane.id}`}
+            aria-selected={activeLane === lane.id}
+            tabIndex={activeLane === lane.id ? 0 : -1}
+            onKeyDown={(event) => {
+              const index = LANES.findIndex((item) => item.id === lane.id);
+              const nextIndex =
+                event.key === 'ArrowRight'
+                  ? (index + 1) % LANES.length
+                  : event.key === 'ArrowLeft'
+                    ? (index + LANES.length - 1) % LANES.length
+                    : event.key === 'Home'
+                      ? 0
+                      : event.key === 'End'
+                        ? LANES.length - 1
+                        : null;
+              if (nextIndex === null) return;
+              event.preventDefault();
+              const next = LANES[nextIndex].id;
+              setActiveLane(next);
+              document.getElementById(`lab-tab-${next}`)?.focus();
+            }}
+            onClick={() => setActiveLane(lane.id)}
+            className={`min-w-0 rounded px-1 py-2 text-[10px] ${activeLane === lane.id ? 'bg-[#1c1c20] text-zinc-100' : 'text-zinc-500'}`}
+          >
+            <span className="block truncate">{lane.label}</span>
+            <span className="font-mono">{lane.visible.length}</span>
           </button>
         ))}
       </div>
-
-      {statusNotice && <p role="status" className="text-xs text-zinc-300 rounded-md bg-[#161619] border border-zinc-800/80 p-3">{statusNotice}</p>}
-
       {lastDeliveredOrder?.estado === 'Entregado' && (
-        <section aria-label="Comprobante de la última entrega" className="rounded-lg border border-zinc-800/80 bg-[#161619] p-4 space-y-3">
-          <p role="status" className="text-xs font-semibold text-zinc-200">{lastDeliveredOrder.id} · Equipo entregado</p>
-          <p className="text-xs text-zinc-400">
-            {lastDeliveredOrder.fechaEntrega && Number.isFinite(Date.parse(lastDeliveredOrder.fechaEntrega))
-              ? <time dateTime={lastDeliveredOrder.fechaEntrega}>{new Date(lastDeliveredOrder.fechaEntrega).toLocaleString('es-MX', { dateStyle: 'medium', timeStyle: 'short' })}</time>
-              : 'Fecha de entrega no registrada'}
-            {' · '}{lastDeliveredOrder.garantiaDias} días de garantía
+        <section
+          aria-label="Comprobante de la última entrega"
+          className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-zinc-800/80 bg-[#161619] px-3 py-2 text-[11px] text-zinc-400"
+        >
+          <p>
+            <span className="font-mono text-zinc-200">
+              {lastDeliveredOrder.id}
+            </span>{' '}
+            · Entregado{' '}
+            {deliveredDate ? (
+              <time dateTime={deliveredDate} className="font-mono">
+                {new Date(deliveredDate).toLocaleString('es-MX', {
+                  dateStyle: 'short',
+                  timeStyle: 'short',
+                })}
+              </time>
+            ) : (
+              '· Fecha sin registrar'
+            )}{' '}
+            · {lastDeliveredOrder.garantiaDias} días de garantía
           </p>
-          {onDeliveryReceipt && <button type="button" onClick={() => onDeliveryReceipt(lastDeliveredOrder)} className="w-full min-h-11 rounded-md bg-zinc-100 text-zinc-950 font-semibold text-xs px-3 flex items-center justify-center gap-2"><MessageCircle className="h-5 w-5 shrink-0" />Enviar comprobante y garantía</button>}
+          {onDeliveryReceipt && (
+            <button
+              type="button"
+              onClick={() => onDeliveryReceipt(lastDeliveredOrder)}
+              className={secondary}
+            >
+              <MessageCircle className="h-3 w-3" />
+              Enviar comprobante y garantía
+            </button>
+          )}
         </section>
       )}
-
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 items-start" aria-label={`Equipos: ${currentLane.label.toLowerCase()}`}>
-        {/* Hide cards instead of unmounting them: searches and lane changes must
-            preserve note drafts, camera inputs and in-flight save guards/errors. */}
-        {activeOrders.map((order) => (
-          <div key={order.id} hidden={!visibleIds.has(order.id)} className="min-w-0">
-            <WorkshopOrderCard now={now} order={order} {...cardActions} onStatusChanged={setStatusNotice} />
-          </div>
-        ))}
+      <div
+        aria-label="Tablero Kanban de laboratorio"
+        className="grid min-w-0 grid-cols-1 items-start gap-3 lg:grid-cols-3"
+      >
+        {lanes.map((lane) => {
+          const visibleIds = new Set(lane.visible.map((order) => order.id));
+          const laneOrders = orders
+            .filter((order) => getWorkshopLane(order.estado) === lane.id)
+            .sort(
+              (a, b) =>
+                Number(Boolean(b.prioridadUrgente)) -
+                Number(Boolean(a.prioridadUrgente))
+            );
+          return (
+            <section
+              key={lane.id}
+              id={`lab-lane-${lane.id}`}
+              aria-label={lane.label}
+              className={`min-w-0 rounded-lg border border-zinc-800/80 bg-[#111114] ${activeLane === lane.id ? 'block' : 'hidden lg:block'}`}
+            >
+              <div className="flex items-center gap-2 border-b border-zinc-800/80 px-3 py-2.5 text-[11px] text-zinc-400">
+                <lane.icon className="h-3.5 w-3.5" />
+                <h2 className="font-semibold text-zinc-300">{lane.label}</h2>
+                <span className="ml-auto rounded bg-[#1c1c20] px-1.5 py-0.5 font-mono text-[10px] text-zinc-500">
+                  {lane.visible.length}
+                </span>
+              </div>
+              <div className="space-y-2 p-2">
+                {laneOrders.map((order) => (
+                  <div key={order.id} hidden={!visibleIds.has(order.id)}>
+                    <WorkshopOrderCard
+                      now={now}
+                      order={order}
+                      {...cardActions}
+                    />
+                  </div>
+                ))}
+                {!lane.visible.length && (
+                  <p className="px-1 py-4 text-[11px] text-zinc-600">
+                    {searchQuery.trim()
+                      ? 'No encontramos equipos con esa búsqueda.'
+                      : lane.empty}
+                  </p>
+                )}
+              </div>
+            </section>
+          );
+        })}
       </div>
-      {currentLane.orders.length === 0 && (
-        <div className="border border-dashed border-zinc-800/80 rounded-lg py-12 px-5 text-center space-y-3">
-          <Inbox className="w-9 h-9 text-zinc-600 mx-auto" />
-          <p className="text-zinc-300">{searchQuery.trim() ? 'No encontramos equipos con esa búsqueda en esta cola.' : currentLane.empty}</p>
-          {searchQuery.trim() && <button type="button" onClick={() => onSearchChange('')} className="min-h-12 px-4 text-teal-300 font-semibold">Limpiar búsqueda</button>}
-        </div>
+      {searchQuery.trim() && !lanes.some((lane) => lane.visible.length) && (
+        <button
+          type="button"
+          onClick={() => onSearchChange('')}
+          className="text-[11px] text-zinc-400 hover:text-zinc-100"
+        >
+          Limpiar búsqueda
+        </button>
       )}
     </div>
   );

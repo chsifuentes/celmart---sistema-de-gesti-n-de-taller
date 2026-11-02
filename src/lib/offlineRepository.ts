@@ -37,17 +37,20 @@ export function readOfflineIdentity(): string | null {
   }
 }
 export function rememberOfflineIdentity(userId: string) {
+  locallyLocked=false;
   storage?.setItem(IDENTITY_KEY, JSON.stringify({ userId }));
   if (storage && 'removeItem' in storage)
     (storage as Storage).removeItem(LOCKED_KEY);
 }
+let locallyLocked=false;
 export function lockOfflineSession() {
-  storage?.setItem(LOCKED_KEY, '1');
-  if (storage && 'removeItem' in storage)
-    (storage as Storage).removeItem(IDENTITY_KEY);
+  locallyLocked=true;
+  try { if(storage&&'removeItem' in storage)(storage as Storage).removeItem(IDENTITY_KEY); } catch { /* Still locked in memory. */ }
+  try { storage?.setItem(LOCKED_KEY,'1'); } catch { /* SDK signOut also clears its session. */ }
 }
 export function sessionLocked(): boolean {
-  return !!storage?.getItem(LOCKED_KEY);
+  if(locallyLocked)return true;
+  try{return !!storage?.getItem(LOCKED_KEY);}catch{return true;}
 }
 export function mapClientRow(row: Record<string, unknown>): Client {
   return {
@@ -169,6 +172,7 @@ export async function encodeSyncCommand(
   return { ...command };
 }
 async function send(operation: PendingOperation): Promise<SyncResult> {
+  if(sessionLocked()||readOfflineIdentity()!==operation.ownerId)throw new Error("Inicia sesión con la cuenta que guardó estos cambios.");
   const command = await encodeSyncCommand(operation);
   const response = await withSyncTimeout<{
     data: unknown;

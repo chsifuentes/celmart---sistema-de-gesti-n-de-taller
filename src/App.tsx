@@ -39,13 +39,15 @@ import { CashRegisterView } from './components/CashRegisterView';
 import { warrantyActive } from './lib/operations';
 import type { PaymentMethod } from './lib/operations';
 import {EquipmentLabelModal} from './components/EquipmentLabelModal';
-import { offlineStore, useWorkshopField, readOfflineIdentity, rememberOfflineIdentity, lockOfflineSession, sessionLocked, uniqueOrderId, mapClientRow, mapMovementRow, withSyncTimeout } from './lib/offlineRepository';
+import { offlineStore, useWorkshopField, rememberOfflineIdentity, lockOfflineSession, sessionLocked, uniqueOrderId, mapClientRow, mapMovementRow, withSyncTimeout } from './lib/offlineRepository';
 import { browserOnline, isNetworkError, type WorkshopSnapshot } from './lib/offlineSync';
 export default function App() {
   const [labelOrder,setLabelOrder]=useState<Order|null>(null);
   const [selectedTechnician,setSelectedTechnician]=useState('');
   // Auth State
-  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => !!readOfflineIdentity());
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
+
+  const authVersion = useRef(0);
 
   // Navigation State
   const [activeTab, setActiveTab] = useState<TabType>('dashboard');
@@ -276,22 +278,49 @@ export default function App() {
 
   useEffect(() => {
     let active = true;
+    const version = authVersion.current;
     const restore = async () => {
       if (sessionLocked()) return;
-      const cachedUser = readOfflineIdentity();
-      if (!browserOnline()) { if (cachedUser) { await offlineStore.bindOwner(cachedUser); if (active) setIsAuthenticated(true); } return; }
       try {
         const {data,error} = await withSyncTimeout<{data:{session:{user:{id:string}}|null};error:unknown}>(() => supabase.auth.getSession(), 4000);
-        if (error) throw error;
-        if (data.session?.user?.id) {
-          await offlineStore.bindOwner(data.session.user.id); rememberOfflineIdentity(data.session.user.id);
-          if (active) setIsAuthenticated(true);
-        } else if (active) setIsAuthenticated(false);
-      } catch (error) { if (active && cachedUser && isNetworkError(error)) setIsAuthenticated(true); }
+        if (error || !data.session?.user?.id || !active || version !== authVersion.current || sessionLocked()) return;
+        await offlineStore.bindOwner(data.session.user.id);
+        if (!active || version !== authVersion.current || sessionLocked()) return;
+        rememberOfflineIdentity(data.session.user.id);
+        setIsAuthenticated(true);
+      } catch { /* Neither a timeout nor a cached identity is authentication. */ }
     };
     void restore();
-    return () => { active=false; };
+    const locked = (event:StorageEvent) => {
+      if(event.key==='celmart_session_locked'&&event.newValue){authVersion.current++;setIsAuthenticated(false);}
+    };
+    window.addEventListener('storage',locked);
+    const authListener=supabase.auth.onAuthStateChange?.((event:string)=>{
+      if(event==='SIGNED_OUT'&&active){authVersion.current++;setIsAuthenticated(false);clearPrivateUI();lockOfflineSession();}
+    });
+    return () => { active=false; window.removeEventListener('storage',locked); authListener?.data.subscription.unsubscribe(); };
   }, []);
+
+  const clearPrivateUI = () => {
+    setSelectedOrderForDrawer(null);setSelectedOrderForPrint(null);setSelectedOrderForWhatsApp(null);
+    setSelectedWhatsAppTemplateKey(undefined);setCustomWhatsAppMessage(undefined);setManualFallbackReason(undefined);
+    setIsNewOrderModalOpen(false);setReceptionPhoto(null);setLabelOrder(null);setSelectedTechnician('');
+    setLastDeliveredOrder(null);setWhatsAppFallbacks([]);setAutomationNotice(null);setDataError(null);setConfigError(null);
+    setGlobalSearch('');setTableStatusFilter('Todos');setActiveTab('dashboard');setMobileMenuOpen(false);
+  };
+  const handleAuthenticated = async (userId:string) => {
+    const version=++authVersion.current;
+    const {data,error}=await withSyncTimeout<{data:{session:{user:{id:string}}|null};error:unknown}>(()=>supabase.auth.getSession(),4000);
+    if(error||!data.session?.user?.id||data.session.user.id!==userId)throw new Error('No se pudo verificar la sesión. Vuelve a iniciar sesión.');
+    await offlineStore.bindOwner(userId);
+    if(version!==authVersion.current)return;
+    rememberOfflineIdentity(userId);clearPrivateUI();setIsAuthenticated(true);
+  };
+  const handleLogout = () => {
+    authVersion.current++;fetchVersion.current++;configVersion.current++;
+    setIsAuthenticated(false);clearPrivateUI();lockOfflineSession();
+    void supabase.auth.signOut({scope:'local'}).catch(()=>{ /* Local lock already prevents access without a verified new login. */ });
+  };
 
   useEffect(() => {
     if (!isAuthenticated) return;
@@ -313,7 +342,7 @@ export default function App() {
     });
     window.addEventListener('online', online); window.addEventListener('offline', offline); window.addEventListener('focus', focus);
     const timer = setInterval(() => { if (browserOnline() && offlineStore.getSnapshot().pending && !offlineStore.getSnapshot().error) void synchronize(); }, 30000);
-    void synchronize();
+    void synchronize(true);
     return () => { active=false; clearInterval(timer); unsubscribe(); window.removeEventListener('online',online); window.removeEventListener('offline',offline); window.removeEventListener('focus',focus); fetchVersion.current++; };
   }, [isAuthenticated, fetchData, refreshSharedConfig]);
 
@@ -640,7 +669,7 @@ export default function App() {
   });
 
   if (!isAuthenticated) {
-    return <LoginView onLogin={async userId=>{await offlineStore.bindOwner(userId);rememberOfflineIdentity(userId);setIsAuthenticated(true);}} />;
+    return <LoginView onLogin={handleAuthenticated} />;
   }
 
   return (
@@ -667,7 +696,7 @@ export default function App() {
           viewMode={viewMode}
           onViewModeChange={changeViewMode}
           urgentOrdersCount={urgentOrdersCount}
-          onLogout={()=>{lockOfflineSession();setIsAuthenticated(false);void supabase.auth.signOut();}}
+          onLogout={handleLogout}
           onToggleMobileMenu={() => setMobileMenuOpen(!mobileMenuOpen)}
         />
         <main className={`flex-1 overflow-y-auto min-h-0 ${viewMode === 'taller' && activeTab === 'dashboard' ? 'p-0' : 'p-4 sm:p-6'} space-y-4`}>

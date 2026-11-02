@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { Lock, Mail, Eye, EyeOff, Loader2 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 
@@ -7,6 +7,7 @@ interface LoginViewProps {
 }
 
 export const LoginView: React.FC<LoginViewProps> = ({ onLogin }) => {
+  const pending = useRef(false);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
@@ -15,21 +16,27 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLogin }) => {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (pending.current) return;
+    pending.current = true;
     setIsLoading(true);
     setErrorMessage('');
-
-    const { data, error } = await supabase.auth.signInWithPassword({
-      email: email.trim(),
-      password: password,
-    });
-
-    setIsLoading(false);
-
-    if (error) {
-      setErrorMessage('Credenciales incorrectas en Supabase.');
-    } else if (data.session) {
-      try { await onLogin(data.session.user.id); }
-      catch (error) { setErrorMessage(error instanceof Error ? error.message : 'No se pudo abrir la sesión local.'); }
+    try {
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email: email.trim(),
+        password,
+      });
+      if (error)
+        throw new Error('Credenciales incorrectas o servicio no disponible.');
+      if (!data.session?.user?.id)
+        throw new Error('No se recibió una sesión válida.');
+      await onLogin(data.session.user.id);
+    } catch (error) {
+      setErrorMessage(
+        error instanceof Error ? error.message : 'No se pudo iniciar sesión.'
+      );
+    } finally {
+      pending.current = false;
+      setIsLoading(false);
     }
   };
 
@@ -43,7 +50,9 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLogin }) => {
           <h1 className="text-lg font-bold text-zinc-100 tracking-tight font-sans">
             CelMart
           </h1>
-          <p className="text-[11px] font-mono text-zinc-400">Acceso a Sistema de Taller</p>
+          <p className="text-[11px] font-mono text-zinc-400">
+            Acceso a Sistema de Taller
+          </p>
         </div>
 
         {errorMessage && (
@@ -86,7 +95,11 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLogin }) => {
               className="absolute inset-y-0 right-0 pr-3 flex items-center text-zinc-500 hover:text-zinc-300 transition-colors"
               tabIndex={-1}
             >
-              {showPassword ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+              {showPassword ? (
+                <EyeOff className="w-3.5 h-3.5" />
+              ) : (
+                <Eye className="w-3.5 h-3.5" />
+              )}
             </button>
           </div>
 

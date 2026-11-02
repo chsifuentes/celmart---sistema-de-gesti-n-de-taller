@@ -3,7 +3,7 @@ import {
   AlertTriangle,
   Bell,
   Command,
-  LogOut,
+  Lock,
   Menu,
   Monitor,
   Plus,
@@ -324,20 +324,21 @@ export function Header({
           {showAccount && (
             <div className="absolute right-0 mt-2 w-44 rounded-lg border border-zinc-800/80 bg-[#161619] p-1 shadow-xl text-xs">
               <p className="px-2 py-2 text-zinc-500">CelMart · Sesión activa</p>
-              {onLogout && (
-                <button
-                  id="btn-lock-session"
-                  type="button"
-                  onClick={onLogout}
-                  className="w-full p-2 rounded-md hover:bg-[#1c1c20] text-zinc-300 flex items-center gap-2"
-                >
-                  <LogOut className="w-3.5 h-3.5" />
-                  Cerrar sesión
-                </button>
-              )}
             </div>
           )}
         </div>
+        {onLogout && (
+          <button
+            id="btn-lock-session"
+            type="button"
+            aria-label="Bloquear sesión"
+            title="Cerrar sesión"
+            onClick={onLogout}
+            className="w-7 h-8 sm:w-8 inline-flex items-center justify-center rounded-md text-zinc-400 hover:text-zinc-100 hover:bg-[#1c1c20] border border-transparent hover:border-zinc-700"
+          >
+            <Lock className="w-3.5 h-3.5" />
+          </button>
+        )}
       </div>
     </header>
   );

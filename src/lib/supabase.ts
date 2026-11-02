@@ -5,6 +5,7 @@ const supabaseUrl = ((import.meta as any).env?.VITE_SUPABASE_URL || '').trim();
 const supabaseAnonKey = ((import.meta as any).env?.VITE_SUPABASE_ANON_KEY || '').trim();
 
 export function createMockSupabaseClient() {
+  const authListeners=new Set<(event:string)=>void>();
   console.info('[CelMart] Supabase sin configurar: usando datos locales de demostración');
   const persistenceKey = 'celmart:mock-tables:v1';
 
@@ -469,15 +470,29 @@ export function createMockSupabaseClient() {
       return channel.unsubscribe();
     },
     auth: {
-      signInWithPassword: async ({ email }: { email: string; password?: string }) => {
-        const session={access_token:'mock-token',user:{id:'mock-user-1',email:email||'admin@celmart.mx'}};
-        try { localStorage.setItem('celmart_mock_session',JSON.stringify(session)); } catch { /* Demo memory only. */ }
+      signInWithPassword: async ({ email, password }: { email: string; password?: string }) => {
+        if(!email.trim()||!password?.trim())return {data:{session:null},error:{message:'Introduce correo y contraseña.'}};
+        const session={access_token:'mock-token',user:{id:'mock-user-1',email:email.trim()}};
+        try {
+          localStorage.setItem('celmart_mock_session',JSON.stringify(session));
+          localStorage.setItem('celmart_mock_login_explicit','1');
+        } catch { return {data:{session:null},error:{message:'El navegador no pudo guardar la sesión explícita.'}}; }
         return {data:{session},error:null};
       },
-      signOut: async () => { try { localStorage.removeItem('celmart_mock_session'); } catch { /* No browser storage. */ } return {error:null}; },
+      onAuthStateChange: (callback:(event:string)=>void) => {authListeners.add(callback);return {data:{subscription:{unsubscribe:()=>{authListeners.delete(callback);}}}};},
+      signOut: async (_options?:{scope?:'local'|'global'|'others'}) => {
+        for(const key of ['celmart_mock_login_explicit','celmart_mock_session']) {try{localStorage.removeItem(key);}catch{/* App also locks locally. */}}
+        for(const callback of authListeners)callback('SIGNED_OUT');
+        return {error:null};
+      },
       getSession: async () => {
-        let session=null;
-        try { session=JSON.parse(localStorage.getItem('celmart_mock_session')||'null'); } catch { /* No previous demo login. */ }
+        let session:{access_token:string;user:{id:string;email:string}}|null=null;
+        try {
+          if(localStorage.getItem('celmart_mock_login_explicit')==='1') {
+            const saved=JSON.parse(localStorage.getItem('celmart_mock_session')||'null');
+            if(saved?.access_token==='mock-token'&&saved?.user?.id==='mock-user-1'&&typeof saved?.user?.email==='string'&&saved.user.email.trim())session=saved;
+          }
+        } catch { /* Missing, old or malformed storage never creates a session. */ }
         return {data:{session},error:null};
       },
     },
