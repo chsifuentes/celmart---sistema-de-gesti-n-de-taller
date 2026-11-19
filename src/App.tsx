@@ -12,6 +12,7 @@ import {
   WorkshopConfig,
   TechNote,
   AssignedPart,
+  CounterSale,
   WhatsAppTemplateKey
 } from './types';
 import { buildDeliveryWhatsAppMessage, buildWhatsAppLink, defaultWhatsAppTemplates, determineTemplateKeyForStatus, isValidWhatsAppPhone, replaceWhatsAppVariables, sendAutomatedWhatsApp } from './lib/whatsapp';
@@ -36,10 +37,11 @@ import { mapInventoryRow, mapOrderRow } from './lib/orderRepository';
 import { cacheWorkshopConfig, loadSharedWorkshopConfig, readWorkshopConfigCache, saveSharedWorkshopConfig } from './lib/configRepository';
 
 import { CashRegisterView } from './components/CashRegisterView';
-import { warrantyActive } from './lib/operations';
+import { QuickSaleModal } from './components/QuickSaleModal';
+import { canAssignPart, canTransitionOrder, isPaymentMethod, PAYMENT_METHODS, warrantyActive } from './lib/operations';
 import type { PaymentMethod } from './lib/operations';
 import {EquipmentLabelModal} from './components/EquipmentLabelModal';
-import { offlineStore, useWorkshopField, rememberOfflineIdentity, lockOfflineSession, sessionLocked, uniqueOrderId, mapClientRow, mapMovementRow, withSyncTimeout } from './lib/offlineRepository';
+import { offlineStore, useWorkshopField, rememberOfflineIdentity, lockOfflineSession, sessionLocked, uniqueOrderId, mapClientRow, mapMovementRow, mapSaleRow, withSyncTimeout } from './lib/offlineRepository';
 import { browserOnline, isNetworkError, type WorkshopSnapshot } from './lib/offlineSync';
 export default function App() {
   const [labelOrder,setLabelOrder]=useState<Order|null>(null);
@@ -81,6 +83,7 @@ export default function App() {
     return initialTechnicians;
   });
   const [inventory, setInventory] = useWorkshopField('inventory');
+  const [sales] = useWorkshopField('sales');
   const [movements] = useWorkshopField('movements');
   const [clients] = useWorkshopField('clients');
   const [config, setConfig] = useState<WorkshopConfig>(readWorkshopConfigCache);
@@ -119,6 +122,19 @@ export default function App() {
   const expressCamera = useRef<HTMLInputElement>(null);
   const [selectedOrderForDrawer, setSelectedOrderForDrawer] = useState<Order | null>(null);
   const [selectedOrderForPrint, setSelectedOrderForPrint] = useState<Order | null>(null);
+  const [quickSaleOpen, setQuickSaleOpen] = useState(false);
+  const [inventorySearch, setInventorySearch] = useState('');
+  const [inventorySearchRevision,setInventorySearchRevision]=useState(0);
+  const salePending=useRef(false);
+  const [autoPrintReceipt, setAutoPrintReceipt] = useState(false);
+  const [deliveryRequest, setDeliveryRequest] = useState<{orderId:string;from:OrderStatus}|null>(null);
+  const [deliveryAmount, setDeliveryAmount] = useState('');
+  const [deliveryMethod, setDeliveryMethod] = useState<PaymentMethod>('Efectivo');
+  const [deliveryError, setDeliveryError] = useState<string|null>(null);
+  const [deliverySaving, setDeliverySaving] = useState(false);
+  const deliveryPending = useRef(false);
+  const statusPending = useRef(new Set<string>());
+  const deliveryDialog = useRef<HTMLDivElement>(null);
   const [selectedOrderForWhatsApp, setSelectedOrderForWhatsApp] = useState<Order | null>(null);
   const [selectedWhatsAppTemplateKey, setSelectedWhatsAppTemplateKey] = useState<WhatsAppTemplateKey | undefined>(undefined);
   const [manualFallbackReason, setManualFallbackReason] = useState<string | undefined>();
@@ -127,6 +143,13 @@ export default function App() {
   const sendingReceipts = useRef(new Set<string>());
   const [automationNotice, setAutomationNotice] = useState<string | null>(null);
   const [whatsAppFallbacks, setWhatsAppFallbacks] = useState<{ order: Order; templateKey: WhatsAppTemplateKey; reason: string; message?: string }[]>([]);
+
+  useEffect(() => {
+    if (!deliveryRequest) return;
+    const previousFocus=document.activeElement instanceof HTMLElement?document.activeElement:null;
+    deliveryDialog.current?.querySelector<HTMLInputElement>('input')?.focus();
+    return () => { if(previousFocus?.isConnected)previousFocus.focus(); };
+  }, [deliveryRequest?.orderId]);
 
   useEffect(() => {
     if (selectedOrderForWhatsApp || !whatsAppFallbacks.length) return;
@@ -149,7 +172,9 @@ export default function App() {
     await handleAddNoteToOrder(orderId, logNote, 'general');
   };
 
-  const handleDeliveryReceipt = async (order: Order) => {
+  const handleDeliveryReceipt = async (requestedOrder: Order) => {
+    const order=offlineStore.getSnapshot().data.orders.find(row=>row.id===requestedOrder.id);
+    if(!order){setDataError('La orden no está disponible. Actualiza antes de emitir su comprobante.');return;}
     if (sendingReceipts.current.has(order.id)) return;
     if (offlineStore.getSnapshot().pending || offlineStore.getSnapshot().offline) { setDataError('Sincroniza la entrega antes de enviar el comprobante final. Puedes imprimir su copia local.'); return; }
     if (order.estado !== 'Entregado' || !order.fechaEntrega) {
@@ -257,11 +282,12 @@ export default function App() {
       }
     };
     try {
-      const [orderRows, clientRows, inventoryRows, techRows, movementRows] = await Promise.all([
+      const [orderRows, clientRows, inventoryRows, techRows, movementRows, saleRows] = await Promise.all([
         readRows('ordenes', true), readRows('clientes'), readRows('inventario'), readRows('tecnicos'), readRows('movimientos_inventario', true),
+        readRows('ventas_mostrador', true),
       ]);
       if (version !== fetchVersion.current || offlineStore.getSnapshot().pending) return;
-      const fresh: WorkshopSnapshot = { orders: orderRows.map(mapOrderRow), clients: clientRows.map(mapClientRow), inventory: inventoryRows.map(mapInventoryRow), movements: movementRows.map(mapMovementRow) };
+      const fresh: WorkshopSnapshot = { orders: orderRows.map(mapOrderRow), clients: clientRows.map(mapClientRow), inventory: inventoryRows.map(mapInventoryRow), movements: movementRows.map(mapMovementRow), sales:saleRows.map(mapSaleRow) };
       await offlineStore.replaceRemote(fresh);
       if (techRows.length) {
         const mapped = techRows.map((t): Technician => ({ id:t.id, nombre:t.nombre, iniciales:t.iniciales||'TC', especialidad:t.especialidad||'General', estado:t.estado||'Disponible', ordenesActivas:t.ordenes_activas||0, capacidadMaxima:t.capacidad_maxima||5, horasPromedio:t.horas_promedio||2.5, efectividad:t.efectividad||98, salarioFijo:t.salario_fijo||16000, avatarBg:t.avatar_bg||'bg-blue-600' }));
@@ -303,6 +329,8 @@ export default function App() {
 
   const clearPrivateUI = () => {
     setSelectedOrderForDrawer(null);setSelectedOrderForPrint(null);setSelectedOrderForWhatsApp(null);
+    setDeliveryRequest(null);setDeliveryError(null);setDeliveryAmount('');setAutoPrintReceipt(false);
+    setQuickSaleOpen(false);setInventorySearch('');
     setSelectedWhatsAppTemplateKey(undefined);setCustomWhatsAppMessage(undefined);setManualFallbackReason(undefined);
     setIsNewOrderModalOpen(false);setReceptionPhoto(null);setLabelOrder(null);setSelectedTechnician('');
     setLastDeliveredOrder(null);setWhatsAppFallbacks([]);setAutomationNotice(null);setDataError(null);setConfigError(null);
@@ -359,6 +387,7 @@ export default function App() {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'ordenes' }, refresh)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'inventario' }, refresh)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'movimientos_inventario' }, refresh)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'ventas_mostrador' }, refresh)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'tecnicos' }, refresh)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'configuracion_taller', filter: 'id=eq.default' }, refreshConfig)
       .subscribe((status: string) => {
@@ -432,15 +461,60 @@ export default function App() {
     } catch (error) { setDataError(error instanceof Error?error.message:'No se pudo guardar la orden localmente.'); return false; }
   };
 
+  const deliverOrder = async (orderId:string, from:OrderStatus, method:PaymentMethod, amount:number) => {
+    const current=offlineStore.getSnapshot().data.orders.find(order=>order.id===orderId);
+    if(!current || current.estado!==from || !canTransitionOrder(current.estado,'Entregado'))
+      throw new Error('La orden cambió. Verifica que esté Lista antes de entregar.');
+    if(!isPaymentMethod(method)||!Number.isFinite(amount)||amount<0)throw new Error('Revisa el total a cobrar y el método de pago.');
+    fetchVersion.current++;
+    const result=await offlineStore.submit({kind:'delivery',orderId,from,method,amount:Math.round(amount*100)/100,at:new Date().toISOString()});
+    const sync=offlineStore.getSnapshot();
+    if(result.pending && sync.error && !sync.offline)throw new Error(sync.error);
+    const saved=result.data.orders.find(order=>order.id===orderId);
+    if(!saved || saved.estado!=='Entregado')throw new Error('No se pudo registrar la entrega.');
+    return saved;
+  };
+
   const handleUpdateOrderStatus = async (orderId: string, newStatus: OrderStatus) => {
     const previous=offlineStore.getSnapshot().data.orders.find(order=>order.id===orderId);
     if (!previous) throw new Error('La orden no está disponible en este dispositivo.');
+    if(previous.estado==='Entregado')throw new Error('La orden entregada está bloqueada. Usa Registrar Reingreso por Garantía.');
     if (previous.estado===newStatus) return;
-    fetchVersion.current++;
-    const result=await offlineStore.submit({kind:'status',orderId,from:previous.estado,to:newStatus,at:new Date().toISOString()});
-    const saved=result.data.orders.find(order=>order.id===orderId)!;
-    if (newStatus==='Entregado') setLastDeliveredOrder(saved);
-    else if (!result.pending) void notifyOrderChange(saved,determineTemplateKeyForStatus(newStatus));
+    if(!canTransitionOrder(previous.estado,newStatus))throw new Error('Este cambio de estado no está permitido. Marca Listo antes de entregar.');
+    if(newStatus==='Entregado'&&(!isPaymentMethod(previous.metodoPago)||previous.montoCobrado==null)){
+      if(deliveryPending.current)return;
+      setDeliveryAmount(String(previous.montoCobrado??previous.totalEstimado));
+      setDeliveryMethod(isPaymentMethod(previous.metodoPago)?previous.metodoPago:'Efectivo');
+      setDeliveryError(null);setDeliveryRequest({orderId,from:previous.estado});return;
+    }
+    if(statusPending.current.has(orderId))return;
+    statusPending.current.add(orderId);
+    const version=authVersion.current;
+    try{
+      if(newStatus==='Entregado'){
+        const saved=await deliverOrder(orderId,previous.estado,previous.metodoPago!,previous.montoCobrado!);
+        if(version===authVersion.current)setLastDeliveredOrder(saved);
+      }else{
+        fetchVersion.current++;
+        const result=await offlineStore.submit({kind:'status',orderId,from:previous.estado,to:newStatus,at:new Date().toISOString()});
+        const saved=result.data.orders.find(order=>order.id===orderId)!;
+        if(!result.pending&&version===authVersion.current)void notifyOrderChange(saved,determineTemplateKeyForStatus(newStatus));
+      }
+    }finally{statusPending.current.delete(orderId);}
+  };
+
+  const confirmDelivery = async (event:React.FormEvent) => {
+    event.preventDefault();
+    if(!deliveryRequest||deliveryPending.current)return;
+    if(!deliveryAmount.trim()||!/^\d+(?:\.\d{1,2})?$/.test(deliveryAmount)){setDeliveryError('Indica un importe válido con máximo dos decimales.');return;}
+    deliveryPending.current=true;setDeliverySaving(true);setDeliveryError(null);
+    const version=authVersion.current;
+    try{
+      const saved=await deliverOrder(deliveryRequest.orderId,deliveryRequest.from,deliveryMethod,Number(deliveryAmount));
+      if(version!==authVersion.current)return;
+      setLastDeliveredOrder(saved);setDeliveryRequest(null);setSelectedOrderForPrint(saved);setAutoPrintReceipt(true);
+    }catch(error){if(version===authVersion.current)setDeliveryError(error instanceof Error?error.message:'No se pudo registrar la entrega.');}
+    finally{deliveryPending.current=false;setDeliverySaving(false);}
   };
 
   // Administrative deletes are never optimistic: an unavailable API must
@@ -586,14 +660,58 @@ export default function App() {
     await offlineStore.submit({kind:'note',orderId,note});
   };
   const handleAssignPartToOrder = async (orderId: string, part: AssignedPart) => {
+    const order=offlineStore.getSnapshot().data.orders.find(order=>order.id===orderId);
+    if(!order||!canAssignPart(order))throw new Error('La orden entregada está bloqueada. Registra un reingreso por garantía.');
     const item=offlineStore.getSnapshot().data.inventory.find(item=>item.sku===part.sku);
     if(!item)throw new Error('El repuesto no está disponible en este dispositivo.');
     fetchVersion.current++;
-    await offlineStore.submit({kind:'assignPart',orderId,part,itemId:item.id});
+    const result=await offlineStore.submit({kind:'assignPart',orderId,part,itemId:item.id});
+    const sync=offlineStore.getSnapshot();
+    if(result.pending&&sync.error&&!sync.offline)throw new Error(sync.error);
   };
   const handlePayment=async(id:string,method:PaymentMethod,amount:number)=>{
     fetchVersion.current++;
     await offlineStore.submit({kind:'payment',orderId:id,method,amount});
+  };
+  const handleRemovePartFromOrder=async(orderId:string,partId:string)=>{
+    const data=offlineStore.getSnapshot().data;
+    const order=data.orders.find(row=>row.id===orderId);
+    const part=order?.repuestosAsignados.find(row=>row.id===partId);
+    if(!order||!canAssignPart(order)||!part)throw new Error('Esta asignación no se puede retirar de una orden entregada o inexistente.');
+    const item=data.inventory.find(row=>part.repuestoId?row.id===part.repuestoId:row.sku===part.sku);
+    if(!item)throw new Error('El artículo ya no existe en inventario. Restáuralo antes de devolverlo al almacén.');
+    fetchVersion.current++;
+    const result=await offlineStore.submit({kind:'removePart',orderId,partId,itemId:item.id,movementId:crypto.randomUUID(),at:new Date().toISOString()});
+    const sync=offlineStore.getSnapshot();
+    if(result.pending&&sync.error&&!sync.offline)throw new Error(sync.error);
+  };
+  const handleCounterSale=async(itemId:string,quantity:number,method:PaymentMethod):Promise<CounterSale>=>{
+    if(salePending.current)throw new Error('La venta se está registrando. Espera su confirmación.');
+    const state=offlineStore.getSnapshot();
+    if(state.error&&!state.offline)throw new Error('Resuelve el cambio pendiente antes de registrar otra venta.');
+    const item=state.data.inventory.find(row=>row.id===itemId);
+    if(!item||!Number.isInteger(quantity)||quantity<=0||item.stockActual<quantity)throw new Error('Sin existencias: revisa la cantidad disponible.');
+    if(!isPaymentMethod(method))throw new Error('Selecciona un método de pago válido.');
+    salePending.current=true;
+    try{
+      const sale:CounterSale={id:crypto.randomUUID(),itemId,sku:item.sku,nombre:item.nombre,cantidad:quantity,precioUnitario:item.precioVenta,costoUnitario:item.costoCompra,metodoPago:method,total:Math.round(quantity*item.precioVenta*100)/100,createdAt:new Date().toISOString(),pendingSync:true};
+      fetchVersion.current++;
+      const result=await offlineStore.submit({kind:'sale',sale});
+      const current=offlineStore.getSnapshot();
+      if(result.pending&&current.error&&!current.offline)throw new Error(current.error);
+      const saved=result.data.sales.find(row=>row.id===sale.id);
+      if(!saved)throw new Error('No se pudo recuperar el comprobante de venta.');
+      return {...saved,pendingSync:result.pending};
+    }finally{salePending.current=false;}
+  };
+  const handleGlobalSearchSubmit=(query:string)=>{
+    const exact=query.trim().toLocaleLowerCase('es-MX');
+    if(!exact)return;
+    const data=offlineStore.getSnapshot().data;
+    const order=data.orders.find(row=>row.id.toLocaleLowerCase('es-MX')===exact);
+    if(order){setSelectedOrderForDrawer(order);return;}
+    const item=data.inventory.find(row=>row.sku.toLocaleLowerCase('es-MX')===exact);
+    if(item){setInventorySearch(item.sku);setInventorySearchRevision(value=>value+1);setActiveTab('inventario');setMobileMenuOpen(false);}
   };
   const handleWarranty=async(id:string,reason:string)=>{
     if(!browserOnline()||offlineStore.getSnapshot().offline||offlineStore.getSnapshot().pending)throw new Error('Sincroniza las órdenes para validar el reingreso por garantía.');
@@ -692,6 +810,7 @@ export default function App() {
         <Header onDiscardSync={()=>{void offlineStore.discardRejected().then(()=>offlineStore.flush(true)).then(()=>fetchData(true)).catch(error=>setDataError(error.message));}} syncState={syncState} onRetrySync={()=>{void offlineStore.flush(true).then(()=>fetchData(true));}} warrantyNotifications={orders.filter(o=>o.parentOrderId&&o.estado==='Garantía').map(o=>({id:o.id,technician:o.tecnico?.nombre||'Por asignar'}))} onOpenWarranty={id=>setSelectedOrderForDrawer(orders.find(o=>o.id===id)||null)}
           globalSearch={globalSearch}
           setGlobalSearch={setGlobalSearch}
+          onSearchSubmit={handleGlobalSearchSubmit}
           onOpenNewOrder={openNewOrder}
           viewMode={viewMode}
           onViewModeChange={changeViewMode}
@@ -747,7 +866,7 @@ export default function App() {
                     onSelectOrder={(order) => setSelectedOrderForDrawer(order)}
                     onPrintTicket={(order) => setSelectedOrderForPrint(order)}
                     onOpenWhatsApp={handleOpenWhatsApp}
-                    onUpdateOrderStatus={(orderId, status) => { void handleUpdateOrderStatus(orderId, status).catch((error: Error) => setDataError(error.message)); }}
+                    onUpdateOrderStatus={handleUpdateOrderStatus}
                     onDeleteOrder={handleDeleteOrder}
                   />
                 </div>
@@ -780,11 +899,14 @@ export default function App() {
               />
             </div>
           )}
-          {activeTab === 'caja' && <CashRegisterView width={config.anchoTicket}/>}
+          {activeTab === 'caja' && <CashRegisterView width={config.anchoTicket} onOpenQuickSale={()=>setQuickSaleOpen(true)}/>}
           {activeTab === 'inventario' && (
             <div className="animate-in fade-in duration-150">
               <InventoryView
                 inventory={inventory}
+                searchQuery={inventorySearch}
+                searchRevision={inventorySearchRevision}
+                onOpenQuickSale={()=>setQuickSaleOpen(true)}
                 onUpdateStock={(id,delta)=>{void handleUpdateInventoryStock(id,delta).catch(error=>setDataError(error.message));}}
                 onAddInventoryItem={handleAddInventoryItem}
                 onEditInventoryItem={handleEditInventoryItem}
@@ -840,19 +962,43 @@ export default function App() {
         onPayment={handlePayment}
         onWarranty={handleWarranty}
         onAssignPart={handleAssignPartToOrder}
+        onRemovePart={handleRemovePartFromOrder}
         onAddPhoto={handleAddPhotoToOrder}
         onDeliveryReceipt={(order) => { void handleDeliveryReceipt(order); }}
         onPrintTicket={(order) => setSelectedOrderForPrint(order)}
         onOpenWhatsApp={handleOpenWhatsApp}
         inventory={inventory}
       />
+      <QuickSaleModal isOpen={quickSaleOpen} onClose={()=>setQuickSaleOpen(false)} inventory={inventory} config={config} onSale={handleCounterSale} saleUpdates={sales}/>
       <ThermalReceiptModal
-        order={selectedOrderForPrint}
+        order={selectedOrderForPrint?orders.find(order=>order.id===selectedOrderForPrint.id)??selectedOrderForPrint:null}
         isOpen={!!selectedOrderForPrint}
-        onClose={() => setSelectedOrderForPrint(null)}
+        onClose={() => {setSelectedOrderForPrint(null);setAutoPrintReceipt(false);}}
+        autoPrint={autoPrintReceipt}
+        pendingSync={offlineStore.getSnapshot().pending>0}
         config={config}
         onSendDelivery={(order) => { void handleDeliveryReceipt(order); }}
       />
+      {deliveryRequest&&<div className="fixed inset-0 z-[70] bg-black/75 flex items-center justify-center p-4" onClick={(event)=>{if(event.target===event.currentTarget&&!deliverySaving)setDeliveryRequest(null);}}>
+        <div ref={deliveryDialog} role="dialog" aria-modal="true" aria-labelledby="delivery-title" className="w-full max-w-sm rounded-lg border border-zinc-800/80 bg-[#161619] shadow-xl" onKeyDown={(event)=>{
+          if(event.key==='Escape'&&!deliverySaving){event.stopPropagation();setDeliveryRequest(null);}
+          if(event.key==='Tab'){
+            const controls=deliveryDialog.current?.querySelectorAll<HTMLElement>('button:not(:disabled),input:not(:disabled)');
+            if(!controls?.length)return;
+            const first=controls[0],last=controls[controls.length-1];
+            if(event.shiftKey&&document.activeElement===first){event.preventDefault();last.focus();}
+            else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();first.focus();}
+          }
+        }}>
+          <form onSubmit={confirmDelivery} className="p-4 space-y-4">
+            <div className="flex items-center justify-between gap-3"><h2 id="delivery-title" className="text-xs font-semibold text-zinc-100">Confirmar entrega <span className="font-mono text-zinc-400">{deliveryRequest.orderId}</span></h2><button type="button" disabled={deliverySaving} onClick={()=>setDeliveryRequest(null)} aria-label="Cerrar confirmación de entrega" className="p-1 text-zinc-500 hover:text-zinc-100">✕</button></div>
+            <label className="block text-xs text-zinc-400">Total a Cobrar <span className="font-mono">MXN</span><input aria-label="Total a Cobrar" type="number" min="0" step="0.01" required disabled={deliverySaving} value={deliveryAmount} onChange={(event)=>setDeliveryAmount(event.target.value)} className="mt-1.5 w-full rounded-md border border-zinc-800/80 bg-[#1c1c20] px-3 py-2 text-sm font-mono text-zinc-100 outline-none focus:border-zinc-600"/></label>
+            <div role="group" aria-label="Método de pago" className="flex gap-1.5">{PAYMENT_METHODS.map((method,index)=><button key={method} type="button" aria-pressed={deliveryMethod===method} disabled={deliverySaving} onClick={()=>setDeliveryMethod(method)} className={`flex-1 rounded-md border px-2 py-2 text-[11px] ${deliveryMethod===method?'border-zinc-600 bg-[#1c1c20] text-zinc-100':'border-zinc-800/80 text-zinc-500 hover:border-zinc-700'}`}>{['💵','🏦','💳'][index]} {method}</button>)}</div>
+            {deliveryError&&<p role="alert" className="text-xs text-rose-300">{deliveryError}</p>}
+            <div className="flex justify-end"><button type="submit" disabled={deliverySaving} className="rounded-md bg-zinc-100 px-3.5 py-2 text-xs font-semibold text-zinc-950 hover:bg-white disabled:opacity-50">{deliverySaving?'Registrando…':'Confirmar Entrega e Imprimir Garantía'}</button></div>
+          </form>
+        </div>
+      </div>}
       <WhatsAppPreviewModal
         order={selectedOrderForWhatsApp}
         isOpen={!!selectedOrderForWhatsApp}

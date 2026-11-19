@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { 
   Search, 
   Plus, 
@@ -107,6 +107,9 @@ function InventoryImageField({ value, onChange, sku, name, disabled, onBusyChang
 }
 
 interface InventoryViewProps {
+  searchQuery?: string;
+  searchRevision?: number;
+  onOpenQuickSale?: () => void;
   inventory: InventoryItem[];
   onUpdateStock: (itemId: string, delta: number) => void;
   onAddInventoryItem: (newItem: Omit<InventoryItem, 'id'>) => Promise<void | InventoryItem> | void;
@@ -115,13 +118,16 @@ interface InventoryViewProps {
 }
 
 export const InventoryView: React.FC<InventoryViewProps> = ({
+  searchQuery,
+  searchRevision,
+  onOpenQuickSale,
   inventory,
   onUpdateStock,
   onAddInventoryItem,
   onEditInventoryItem,
   onDeleteInventoryItem,
 }) => {
-  const [searchTerm, setSearchTerm] = useState('');
+  const [searchTerm, setSearchTerm] = useState(searchQuery ?? '');
   const [selectedCategory, setSelectedCategory] = useState<string>('Todas');
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [itemToEdit, setItemToEdit] = useState<InventoryItem | null>(null);
@@ -156,6 +162,12 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
   const [editError, setEditError] = useState('');
   const [savingForm, setSavingForm] = useState<'add' | 'edit' | null>(null);
   const saveInProgress = useRef(false);
+
+  useEffect(() => {
+    if (searchQuery === undefined) return;
+    setSearchTerm(searchQuery);
+    setSelectedCategory('Todas');
+  }, [searchQuery, searchRevision]);
 
   const categories = [
     'Todas',
@@ -287,6 +299,8 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
           </div>
         </div>
 
+        <div className="flex flex-wrap items-center gap-2 self-start sm:self-auto">
+        {onOpenQuickSale && <button type="button" id="btn-quick-counter-sale" onClick={onOpenQuickSale} className="rounded-md border border-zinc-800/80 bg-[#1c1c20] px-3.5 py-2 text-xs font-semibold text-zinc-200 hover:border-zinc-700">⚡ Venta Rápida Mostrador</button>}
         <button
           id="btn-add-inventory-modal"
           onClick={() => { setAddError(''); setIsAddModalOpen(true); }}
@@ -295,6 +309,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
           <PackagePlus className="w-4 h-4" />
           <span>Nuevo Repuesto</span>
         </button>
+        </div>
       </div>
 
       {/* Filter and Search Bar with Barcode Scanner Indicator */}

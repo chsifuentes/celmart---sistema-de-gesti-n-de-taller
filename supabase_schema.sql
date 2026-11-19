@@ -1,4 +1,4 @@
--- CelMart · Esquema maestro (SDD, etapa 1)
+-- CelMart · Esquema maestro (SDD, etapas 1 y 2)
 -- Fuente SQL única para una instalación Supabase nueva o las tablas heredadas de CelMart.
 -- Ejecutar completo con el rol administrador del SQL Editor. Se puede repetir.
 -- Requiere los esquemas administrados auth, storage y realtime de Supabase.
@@ -98,6 +98,9 @@ create table if not exists public.movimientos_inventario (
   cantidad integer not null,
   autor text not null,
   tiempo text not null,
+  motivo text,
+  repuesto_id uuid,
+  costo_unitario numeric,
   created_at timestamp with time zone default now() not null
 );
 
@@ -113,6 +116,7 @@ create table if not exists public.cortes_caja (
   monto_apertura numeric not null,
   total_efectivo numeric not null,
   total_transferencia numeric not null,
+  total_tarjeta numeric not null default 0,
   gastos_repuestos numeric not null,
   total_neto numeric not null,
   cerrado_por text not null,
@@ -126,7 +130,34 @@ create table if not exists public.consumos_repuestos (
   sku text not null,
   cantidad integer not null,
   costo_unitario numeric not null,
+  asignacion_id text,
   consumed_at timestamp with time zone default now() not null
+);
+
+-- Libros append-only: una devolución reconoce el retorno hoy, sin reescribir consumos/cortes pasados.
+create table if not exists public.devoluciones_repuestos (
+  id uuid primary key,
+  consumo_id uuid not null references public.consumos_repuestos(id),
+  orden_id text not null,
+  asignacion_id text not null,
+  cantidad integer not null check (cantidad > 0),
+  costo_unitario numeric not null check (costo_unitario >= 0),
+  returned_at timestamptz not null default now(),
+  unique (orden_id, asignacion_id),
+  unique (consumo_id)
+);
+
+create table if not exists public.ventas_mostrador (
+  id text primary key,
+  item_id uuid not null,
+  sku text not null,
+  nombre text not null,
+  cantidad integer not null check (cantidad > 0),
+  precio_unitario numeric not null check (precio_unitario >= 0),
+  costo_unitario numeric not null check (costo_unitario >= 0),
+  metodo_pago text not null check (metodo_pago in ('Efectivo','Transferencia','Tarjeta')),
+  total numeric not null check (total >= 0),
+  created_at timestamptz not null default now()
 );
 
 create table if not exists celmart_private.sync_operations (
@@ -156,6 +187,21 @@ alter table public.ordenes
 alter table public.inventario
   add column if not exists imagen_url text;
 
+alter table public.movimientos_inventario
+  add column if not exists motivo text,
+  add column if not exists repuesto_id uuid,
+  add column if not exists costo_unitario numeric;
+
+alter table public.cortes_caja
+  add column if not exists total_tarjeta numeric not null default 0;
+
+alter table public.consumos_repuestos
+  add column if not exists asignacion_id text;
+
+-- Ampliaciones de contratos: reemplazar sólo estas restricciones conserva los datos históricos.
+alter table public.ordenes drop constraint if exists ordenes_metodo_pago_check;
+alter table public.movimientos_inventario drop constraint if exists movimientos_inventario_tipo_check;
+
 alter table public.tecnicos
   add column if not exists iniciales text,
   add column if not exists ordenes_activas integer default 0,
@@ -170,17 +216,18 @@ do $constraints$
 declare item record;
 begin
   for item in select * from (values
-    ('ordenes', 'ordenes_metodo_pago_check', 'CHECK ((metodo_pago = ANY (ARRAY[''Efectivo''::text, ''Transferencia''::text])))'),
+    ('ordenes', 'ordenes_metodo_pago_check', 'CHECK ((metodo_pago = ANY (ARRAY[''Efectivo''::text, ''Transferencia''::text, ''Tarjeta''::text])))'),
     ('ordenes', 'ordenes_monto_cobrado_check', 'CHECK ((monto_cobrado >= (0)::numeric))'),
     ('ordenes', 'ordenes_parent_order_id_fkey', 'FOREIGN KEY (parent_order_id) REFERENCES public.ordenes(id)'),
     ('ordenes', 'ordenes_ubicacion_fisica_check', 'CHECK ((length(ubicacion_fisica) <= 120))'),
     ('inventario', 'inventario_sku_key', 'UNIQUE (sku)'),
-    ('movimientos_inventario', 'movimientos_inventario_tipo_check', 'CHECK ((tipo = ANY (ARRAY[''consumo''::text, ''reabastecimiento''::text, ''ajuste''::text])))'),
+    ('movimientos_inventario', 'movimientos_inventario_tipo_check', 'CHECK ((tipo = ANY (ARRAY[''consumo''::text, ''salida''::text, ''entrada''::text, ''reabastecimiento''::text, ''ajuste''::text])))'),
     ('configuracion_taller', 'configuracion_taller_object', 'CHECK ((jsonb_typeof(config_json) = ''object''::text))'),
     ('configuracion_taller', 'configuracion_taller_singleton', 'CHECK ((id = ''default''::text))'),
     ('cortes_caja', 'cortes_caja_fecha_key', 'UNIQUE (fecha)'),
     ('cortes_caja', 'cortes_caja_monto_apertura_check', 'CHECK ((monto_apertura >= (0)::numeric))'),
     ('consumos_repuestos', 'consumos_repuestos_cantidad_check', 'CHECK ((cantidad > 0))'),
+    ('consumos_repuestos', 'consumos_repuestos_asignacion_unique', 'UNIQUE (orden_id, asignacion_id)'),
     ('consumos_repuestos', 'consumos_repuestos_costo_unitario_check', 'CHECK ((costo_unitario >= (0)::numeric))')
   ) as definitions(table_name, constraint_name, definition)
   loop
@@ -192,6 +239,8 @@ end $constraints$;
 
 create index if not exists movimientos_inventario_created_at_idx
   on public.movimientos_inventario (created_at desc);
+create index if not exists ventas_mostrador_created_at_idx on public.ventas_mostrador(created_at desc);
+create index if not exists devoluciones_repuestos_returned_at_idx on public.devoluciones_repuestos(returned_at desc);
 
 -- 3. RLS y permisos: acceso compartido del taller autenticado; nada interno para anon.
 
@@ -250,6 +299,20 @@ revoke all on public.consumos_repuestos from public, anon, authenticated;
 grant select, insert on public.consumos_repuestos to authenticated;
 drop policy if exists "celmart_consumos" on public.consumos_repuestos;
 create policy "celmart_consumos" on public.consumos_repuestos
+  for all to authenticated using (true) with check (true);
+
+alter table public.devoluciones_repuestos enable row level security;
+revoke all on public.devoluciones_repuestos from public, anon, authenticated;
+grant select, insert on public.devoluciones_repuestos to authenticated;
+drop policy if exists celmart_devoluciones on public.devoluciones_repuestos;
+create policy celmart_devoluciones on public.devoluciones_repuestos
+  for all to authenticated using (true) with check (true);
+
+alter table public.ventas_mostrador enable row level security;
+revoke all on public.ventas_mostrador from public, anon, authenticated;
+grant select, insert on public.ventas_mostrador to authenticated;
+drop policy if exists celmart_ventas on public.ventas_mostrador;
+create policy celmart_ventas on public.ventas_mostrador
   for all to authenticated using (true) with check (true);
 
 alter table celmart_private.sync_operations enable row level security;
@@ -331,9 +394,12 @@ CREATE OR REPLACE FUNCTION celmart_private.guard_payment()
 AS $function$
 begin
  if old.estado='Entregado' and new.estado is distinct from 'Entregado' then raise exception 'La entrega original se conserva. Registra una suborden por garantía'; end if;
+ if new.estado is distinct from old.estado and (old.estado is null or old.estado not in ('Recibido','En Diagnóstico','Esperando Presupuesto','Esperando Repuesto','En Reparación','Listo','Garantía') or new.estado is null or new.estado not in ('Recibido','En Diagnóstico','Esperando Presupuesto','Esperando Repuesto','En Reparación','Listo','Entregado')) then raise exception 'Cambio de estado no permitido. La garantía requiere una suborden vinculada'; end if;
+ if old.estado='Entregado' and (new.repuestos_asignados is distinct from old.repuestos_asignados or new.costo_mano_obra is distinct from old.costo_mano_obra or new.total_estimado is distinct from old.total_estimado) then raise exception 'La orden entregada no permite editar refacciones ni presupuesto. Registra un reingreso por garantía'; end if;
  if new.estado='Entregado' and old.estado is distinct from 'Entregado' then
   perform pg_advisory_xact_lock(hashtext('celmart-caja-'||(now() at time zone 'America/Mexico_City')::date::text));
-  if new.metodo_pago is null or new.monto_cobrado is null then raise exception 'Registra método e importe del cobro'; end if;
+  if old.estado is distinct from 'Listo' then raise exception 'Marca la orden como Listo antes de entregar'; end if;
+  if new.metodo_pago is null or new.metodo_pago not in ('Efectivo','Transferencia','Tarjeta') or new.monto_cobrado is null or new.monto_cobrado<0 or new.monto_cobrado::text in ('NaN','Infinity','-Infinity') then raise exception 'Registra método e importe válido del cobro'; end if;
   if exists(select 1 from public.cortes_caja where fecha=(now() at time zone 'America/Mexico_City')::date) then raise exception 'La caja de hoy ya está cerrada'; end if;
  end if;
  if old.estado='Entregado' and old.metodo_pago is not null and (new.metodo_pago is distinct from old.metodo_pago or new.monto_cobrado is distinct from old.monto_cobrado) then raise exception 'El cobro entregado es definitivo'; end if;
@@ -362,9 +428,17 @@ AS $function$
  select jsonb_build_object('fecha',p_fecha,
  'total_efectivo',coalesce(sum(monto_cobrado) filter(where metodo_pago='Efectivo'),0),
  'total_transferencia',coalesce(sum(monto_cobrado) filter(where metodo_pago='Transferencia'),0),
+ 'total_tarjeta',coalesce(sum(monto_cobrado) filter(where metodo_pago='Tarjeta'),0),
  'sin_metodo',count(*) filter(where metodo_pago is null or monto_cobrado is null),
- 'gastos_repuestos',(select coalesce(sum(cantidad*costo_unitario),0) from public.consumos_repuestos where (consumed_at at time zone 'America/Mexico_City')::date=p_fecha))
- from public.ordenes where estado='Entregado' and (entregado_at at time zone 'America/Mexico_City')::date=p_fecha;
+ 'gastos_repuestos',
+   (select coalesce(sum(cantidad*costo_unitario),0) from public.consumos_repuestos where (consumed_at at time zone 'America/Mexico_City')::date=p_fecha)
+   +(select coalesce(sum(cantidad*costo_unitario),0) from public.ventas_mostrador where (created_at at time zone 'America/Mexico_City')::date=p_fecha)
+   -(select coalesce(sum(cantidad*costo_unitario),0) from public.devoluciones_repuestos where (returned_at at time zone 'America/Mexico_City')::date=p_fecha))
+ from (
+   select metodo_pago,monto_cobrado from public.ordenes where estado='Entregado' and (entregado_at at time zone 'America/Mexico_City')::date=p_fecha
+   union all
+   select metodo_pago,total as monto_cobrado from public.ventas_mostrador where (created_at at time zone 'America/Mexico_City')::date=p_fecha
+ ) ingresos;
 $function$;
 
 CREATE OR REPLACE FUNCTION public.cerrar_caja(p_apertura numeric, p_observaciones text)
@@ -379,7 +453,8 @@ begin
  if exists(select 1 from public.cortes_caja where fecha=d) then raise exception 'La caja de este día ya está cerrada'; end if;
  s:=public.resumen_caja(d);
  if (s->>'sin_metodo')::int>0 then raise exception 'Hay entregas sin método o importe de pago. Regularízalas antes de cerrar'; end if;
- insert into public.cortes_caja values ('CAJA-'||d,d,p_apertura,(s->>'total_efectivo')::numeric,(s->>'total_transferencia')::numeric,(s->>'gastos_repuestos')::numeric,p_apertura+(s->>'total_efectivo')::numeric+(s->>'total_transferencia')::numeric-(s->>'gastos_repuestos')::numeric,coalesce(auth.jwt()->>'email',auth.uid()::text,'Usuario autenticado'),coalesce(p_observaciones,''),now()) returning * into c;
+ insert into public.cortes_caja(id,fecha,monto_apertura,total_efectivo,total_transferencia,total_tarjeta,gastos_repuestos,total_neto,cerrado_por,observaciones,created_at)
+ values ('CAJA-'||d,d,p_apertura,(s->>'total_efectivo')::numeric,(s->>'total_transferencia')::numeric,(s->>'total_tarjeta')::numeric,(s->>'gastos_repuestos')::numeric,p_apertura+(s->>'total_efectivo')::numeric+(s->>'total_transferencia')::numeric+(s->>'total_tarjeta')::numeric-(s->>'gastos_repuestos')::numeric,coalesce(auth.jwt()->>'email',auth.uid()::text,'Usuario autenticado'),coalesce(p_observaciones,''),now()) returning * into c;
  return to_jsonb(c);
 end $function$;
 
@@ -401,7 +476,7 @@ begin
  return to_jsonb(child);
 end $function$;
 
-CREATE OR REPLACE FUNCTION public.asignar_repuesto(p_order_id text, p_sku text, p_cantidad integer)
+CREATE OR REPLACE FUNCTION celmart_private.assign_order_part(p_order_id text, p_sku text, p_cantidad integer, p_movement_id uuid)
  RETURNS jsonb
  LANGUAGE plpgsql
  SET search_path TO ''
@@ -411,14 +486,66 @@ begin
  select * into o from public.ordenes where id=p_order_id for update;
  if not found or o.estado='Entregado' then raise exception 'Orden no editable'; end if;
  select * into i from public.inventario where sku=p_sku for update;
- if not found or p_cantidad is null or p_cantidad<=0 or i.stock_actual<p_cantidad then raise exception 'Stock insuficiente o cantidad inválida'; end if;
+ if not found or p_cantidad is null or p_cantidad<=0 or coalesce(i.stock_actual,0)<p_cantidad then raise exception 'Sin existencias: stock insuficiente o cantidad inválida'; end if;
  perform pg_advisory_xact_lock(hashtext('celmart-caja-'||(now() at time zone 'America/Mexico_City')::date::text));
  if exists(select 1 from public.cortes_caja where fecha=(now() at time zone 'America/Mexico_City')::date) then raise exception 'La caja de hoy ya está cerrada'; end if;
- item:=jsonb_build_object('id',gen_random_uuid(),'nombre',i.nombre,'sku',i.sku,'cantidad',p_cantidad,'precioUnitario',i.precio_venta);
+ item:=jsonb_build_object('id',p_movement_id,'nombre',i.nombre,'sku',i.sku,'cantidad',p_cantidad,'precioUnitario',coalesce(i.precio_venta,0),'repuestoId',i.id,'costoUnitario',coalesce(i.costo_compra,0));
  update public.inventario set stock_actual=stock_actual-p_cantidad where id=i.id;
- insert into public.consumos_repuestos(orden_id,sku,cantidad,costo_unitario) values(o.id,i.sku,p_cantidad,coalesce(i.costo_compra,0));
- insert into public.movimientos_inventario(id,repuesto_nombre,codigo_orden,tipo,cantidad,autor,tiempo) values(gen_random_uuid()::text,i.nombre,o.id,'consumo',-p_cantidad,'Taller','Ahora');
- update public.ordenes set repuestos_asignados=coalesce(repuestos_asignados,'[]')||jsonb_build_array(item),total_estimado=coalesce(costo_mano_obra,0)+(select coalesce(sum((p->>'cantidad')::numeric*(p->>'precioUnitario')::numeric),0) from jsonb_array_elements(coalesce(o.repuestos_asignados,'[]')||jsonb_build_array(item)) p) where id=o.id returning * into o;
+ insert into public.consumos_repuestos(id,orden_id,sku,cantidad,costo_unitario,asignacion_id) values(p_movement_id,o.id,i.sku,p_cantidad,coalesce(i.costo_compra,0),p_movement_id::text);
+ insert into public.movimientos_inventario(id,repuesto_nombre,repuesto_id,codigo_orden,tipo,cantidad,autor,tiempo,motivo,costo_unitario)
+ values(p_movement_id::text,i.nombre,i.id,o.id,'salida',-p_cantidad,'Taller','Ahora','Asignado a orden '||o.id||' ('||o.dispositivo_modelo||')',coalesce(i.costo_compra,0));
+ update public.ordenes set repuestos_asignados=coalesce(repuestos_asignados,'[]')||jsonb_build_array(item),total_estimado=round(coalesce(o.total_estimado,o.costo_mano_obra,0)+coalesce(i.precio_venta,0)*p_cantidad,2) where id=o.id returning * into o;
+ return to_jsonb(o);
+end $function$;
+
+CREATE OR REPLACE FUNCTION public.asignar_repuesto(p_order_id text, p_sku text, p_cantidad integer)
+ RETURNS jsonb
+ LANGUAGE sql
+ SET search_path TO ''
+AS $function$
+ select celmart_private.assign_order_part(p_order_id,p_sku,p_cantidad,gen_random_uuid());
+$function$;
+
+CREATE OR REPLACE FUNCTION celmart_private.remove_order_part(p_order_id text, p_part_id text, p_item_id uuid, p_movement_id uuid)
+ RETURNS jsonb
+ LANGUAGE plpgsql
+ SET search_path TO ''
+AS $function$
+declare o public.ordenes; i public.inventario; consumption public.consumos_repuestos; part jsonb; matches integer; ids uuid[]; quantity integer; sale_price numeric;
+begin
+ select * into o from public.ordenes where id=p_order_id for update;
+ if not found or o.estado='Entregado' then raise exception 'La orden entregada no permite retirar refacciones. Registra un reingreso por garantía'; end if;
+ select count(*),jsonb_agg(value)->0 into matches,part from jsonb_array_elements(coalesce(o.repuestos_asignados,'[]')) where value->>'id'=p_part_id;
+ if matches<>1 then raise exception 'La refacción asignada cambió o ya fue retirada. Actualiza el expediente'; end if;
+ quantity:=(part->>'cantidad')::integer;
+ sale_price:=(part->>'precioUnitario')::numeric;
+ if quantity is null or quantity<=0 or sale_price is null or sale_price<0 or sale_price::text in ('NaN','Infinity','-Infinity') then raise exception 'La asignación histórica tiene cantidades o precio inválidos. Revisa el Kardex'; end if;
+ select * into i from public.inventario where id=p_item_id for update;
+ if not found or (part->>'repuestoId' is not null and part->>'repuestoId'<>i.id::text) or (part->>'repuestoId' is null and part->>'sku' is distinct from i.sku) then raise exception 'No se pudo vincular la refacción al inventario. Revisa su SKU antes de retirar'; end if;
+ select count(*),array_agg(c.id) into matches,ids from public.consumos_repuestos c
+ where c.orden_id=o.id and (c.asignacion_id=p_part_id or c.id::text=p_part_id)
+ and not exists(select 1 from public.devoluciones_repuestos d where d.consumo_id=c.id);
+ if matches=0 then
+   -- Sólo un consumo antiguo inequívoco permite reconocer su costo histórico.
+   select count(*),array_agg(c.id) into matches,ids from public.consumos_repuestos c
+   where c.orden_id=o.id and c.asignacion_id is null and c.sku=part->>'sku' and c.cantidad=quantity
+   and not exists(select 1 from public.devoluciones_repuestos d where d.consumo_id=c.id);
+ end if;
+ if matches<>1 then raise exception 'No se pudo identificar un consumo histórico único. Revisa el Kardex antes de retirar; no se inventará su costo'; end if;
+ -- La orden ya está bloqueada: sus devoluciones se serializan sin conceder UPDATE al libro histórico.
+ select * into consumption from public.consumos_repuestos where id=ids[1];
+ if consumption.cantidad<>quantity then raise exception 'La cantidad del consumo histórico no coincide. Revisa el Kardex'; end if;
+ perform pg_advisory_xact_lock(hashtext('celmart-caja-'||(now() at time zone 'America/Mexico_City')::date::text));
+ if exists(select 1 from public.cortes_caja where fecha=(now() at time zone 'America/Mexico_City')::date) then raise exception 'La caja de hoy ya está cerrada'; end if;
+ insert into public.devoluciones_repuestos(id,consumo_id,orden_id,asignacion_id,cantidad,costo_unitario)
+ values(p_movement_id,consumption.id,o.id,p_part_id,quantity,consumption.costo_unitario);
+ update public.inventario set stock_actual=coalesce(stock_actual,0)+quantity where id=i.id;
+ insert into public.movimientos_inventario(id,repuesto_nombre,repuesto_id,codigo_orden,tipo,cantidad,autor,tiempo,motivo,costo_unitario)
+ values(p_movement_id::text,i.nombre,i.id,o.id,'entrada',quantity,'Taller','Ahora','Retirado de orden '||o.id,consumption.costo_unitario);
+ update public.ordenes set
+ repuestos_asignados=(select coalesce(jsonb_agg(value order by ordinality),'[]') from jsonb_array_elements(coalesce(o.repuestos_asignados,'[]')) with ordinality where value->>'id' is distinct from p_part_id),
+ total_estimado=round(greatest(0,coalesce(o.total_estimado,o.costo_mano_obra,0)-sale_price*quantity),2)
+ where id=o.id returning * into o;
  return to_jsonb(o);
 end $function$;
 
@@ -438,6 +565,10 @@ declare
  requested text;
  delta integer;
  parts_result jsonb;
+ movement_id uuid;
+ sale public.ventas_mostrador;
+ sale_request jsonb;
+ quantity integer;
 begin
  if actor is null or p_owner_id is distinct from actor::text then raise exception 'Inicia sesión con la cuenta que guardó estos cambios.' using errcode='42501'; end if;
  if p_operation_id is null or jsonb_typeof(p_command) is distinct from 'object' then raise exception 'Operación inválida'; end if;
@@ -447,7 +578,7 @@ begin
    if prior.command_json is distinct from p_command then raise exception 'El contenido de una operación ya confirmada no puede cambiar.'; end if;
    return prior.result_json || jsonb_build_object('replayed',true);
  end if;
- if kind in ('status','note','location','photo','payment','assignPart') then
+ if kind in ('status','note','location','photo','payment','delivery','assignPart','removePart') then
    select * into o from public.ordenes where id=target for update;
    if not found then raise exception 'La orden ya no existe en el servidor.'; end if;
  end if;
@@ -481,14 +612,48 @@ begin
    if requested is null or requested !~ '^https?://' then raise exception 'La foto debe estar subida a Storage antes de sincronizar.'; end if;
    if not (requested=any(coalesce(o.fotos_evidencia,'{}'))) then update public.ordenes set fotos_evidencia=array_append(coalesce(fotos_evidencia,'{}'),requested) where id=o.id returning * into o; end if;
  when 'payment' then
-   if p_command->>'method' not in ('Efectivo','Transferencia') or (p_command->>'amount')::numeric<0 then raise exception 'Cobro inválido'; end if;
-   update public.ordenes set metodo_pago=p_command->>'method',monto_cobrado=(p_command->>'amount')::numeric where id=o.id returning * into o;
+   if p_command->>'method' is null or p_command->>'method' not in ('Efectivo','Transferencia','Tarjeta') or jsonb_typeof(p_command->'amount') is distinct from 'number' or (p_command->>'amount')::numeric<0 then raise exception 'Cobro inválido'; end if;
+   update public.ordenes set metodo_pago=p_command->>'method',monto_cobrado=round((p_command->>'amount')::numeric,2) where id=o.id returning * into o;
+ when 'delivery' then
+   if o.estado is distinct from p_command->>'from' then raise exception 'Conflicto: otra persona cambió el estado. Revisa la orden antes de entregar.'; end if;
+   if o.estado is distinct from 'Listo' then raise exception 'Marca la orden como Listo antes de entregar.'; end if;
+   if p_command->>'method' is null or p_command->>'method' not in ('Efectivo','Transferencia','Tarjeta') or jsonb_typeof(p_command->'amount') is distinct from 'number' or (p_command->>'amount')::numeric<0 then raise exception 'Cobro inválido'; end if;
+   -- Un solo UPDATE y una sola transacción: nunca existe una entrega sin su cobro.
+   -- El trigger fija entregado_at con hora del servidor, ignorando p_command.at.
+   update public.ordenes set estado='Entregado',metodo_pago=p_command->>'method',monto_cobrado=round((p_command->>'amount')::numeric,2) where id=o.id returning * into o;
  when 'assignPart' then
    select * into i from public.inventario where id=(p_command->>'itemId')::uuid and sku=p_command->'part'->>'sku';
    if not found then raise exception 'El repuesto cambió. Revisa el inventario.'; end if;
-   parts_result:=public.asignar_repuesto(o.id,i.sku,(p_command->'part'->>'cantidad')::integer);
+   movement_id:=coalesce(nullif(p_command->'part'->>'id','')::uuid,p_operation_id);
+   parts_result:=celmart_private.assign_order_part(o.id,i.sku,(p_command->'part'->>'cantidad')::integer,movement_id);
    select * into o from public.ordenes where id=o.id;
    select * into i from public.inventario where id=i.id;
+   select * into m from public.movimientos_inventario where id=movement_id::text;
+ when 'removePart' then
+   movement_id:=(p_command->>'movementId')::uuid;
+   if movement_id is null then raise exception 'Identificador de devolución inválido'; end if;
+   parts_result:=celmart_private.remove_order_part(o.id,p_command->>'partId',(p_command->>'itemId')::uuid,movement_id);
+   select * into o from public.ordenes where id=o.id;
+   select * into i from public.inventario where id=(p_command->>'itemId')::uuid;
+   select * into m from public.movimientos_inventario where id=movement_id::text;
+ when 'sale' then
+   sale_request:=p_command->'sale';
+   if jsonb_typeof(sale_request) is distinct from 'object' or coalesce(sale_request->>'id','')='' or length(sale_request->>'id')>100 then raise exception 'Venta inválida'; end if;
+   if exists(select 1 from public.ventas_mostrador where id=sale_request->>'id') then raise exception 'El folio de venta ya existe. No se volverá a cobrar'; end if;
+   if sale_request->>'metodoPago' is null or sale_request->>'metodoPago' not in ('Efectivo','Transferencia','Tarjeta') then raise exception 'Selecciona un método de pago válido'; end if;
+   quantity:=(sale_request->>'cantidad')::integer;
+   select * into i from public.inventario where id=(sale_request->>'itemId')::uuid for update;
+   if not found or i.sku is distinct from sale_request->>'sku' then raise exception 'El producto cambió. Revisa el inventario'; end if;
+   if quantity is null or quantity<=0 or coalesce(i.stock_actual,0)<quantity then raise exception 'Sin existencias: stock insuficiente o cantidad inválida'; end if;
+   if i.precio_venta is null or i.precio_venta<0 or i.precio_venta::text in ('NaN','Infinity','-Infinity') or coalesce(i.costo_compra,0)<0 or coalesce(i.costo_compra,0)::text in ('NaN','Infinity','-Infinity') then raise exception 'El producto tiene precios o costos inválidos'; end if;
+   if jsonb_typeof(sale_request->'precioUnitario') is distinct from 'number' or (sale_request->>'precioUnitario')::numeric<0 or round((sale_request->>'precioUnitario')::numeric,2) is distinct from round(i.precio_venta,2) then raise exception 'Conflicto: el precio de venta cambió. Revisa el importe y confirma nuevamente antes de cobrar'; end if;
+   perform pg_advisory_xact_lock(hashtext('celmart-caja-'||(now() at time zone 'America/Mexico_City')::date::text));
+   if exists(select 1 from public.cortes_caja where fecha=(now() at time zone 'America/Mexico_City')::date) then raise exception 'La caja de hoy ya está cerrada'; end if;
+   insert into public.ventas_mostrador(id,item_id,sku,nombre,cantidad,precio_unitario,costo_unitario,metodo_pago,total)
+   values(sale_request->>'id',i.id,i.sku,i.nombre,quantity,i.precio_venta,coalesce(i.costo_compra,0),sale_request->>'metodoPago',round(quantity*i.precio_venta,2)) returning * into sale;
+   update public.inventario set stock_actual=stock_actual-quantity where id=i.id returning * into i;
+   insert into public.movimientos_inventario(id,repuesto_nombre,repuesto_id,tipo,cantidad,autor,tiempo,motivo,costo_unitario)
+   values(sale.id,i.nombre,i.id,'salida',-quantity,'Mostrador','Ahora','Venta de mostrador',sale.costo_unitario) returning * into m;
  when 'stock' then
    select * into i from public.inventario where id=(p_command->>'itemId')::uuid for update;
    if not found then raise exception 'El repuesto ya no existe.'; end if;
@@ -521,6 +686,7 @@ begin
  if i.id is not null then result:=result||jsonb_build_object('inventory',jsonb_build_array(to_jsonb(i))); end if;
  if c.id is not null then result:=result||jsonb_build_object('clients',jsonb_build_array(to_jsonb(c))); end if;
  if m.id is not null then result:=result||jsonb_build_object('movements',jsonb_build_array(to_jsonb(m))); end if;
+ if sale.id is not null then result:=result||jsonb_build_object('sales',jsonb_build_array(to_jsonb(sale))); end if;
  insert into celmart_private.sync_operations(operation_id,owner_id,command_json,result_json) values(p_operation_id,actor,p_command,result);
  return result;
 end $function$;
@@ -585,6 +751,10 @@ end $function$;
 
 -- Los helpers de trigger no son endpoints públicos.
 revoke all on function celmart_private.stamp_config_updated_at(),celmart_private.stamp_first_delivery(),celmart_private.stamp_order_status(),celmart_private.guard_payment(),celmart_private.broadcast_tracking_change() from public,anon,authenticated;
+revoke all on function celmart_private.assign_order_part(text,text,integer,uuid) from public,anon,authenticated;
+grant execute on function celmart_private.assign_order_part(text,text,integer,uuid) to authenticated;
+revoke all on function celmart_private.remove_order_part(text,text,uuid,uuid) from public,anon,authenticated;
+grant execute on function celmart_private.remove_order_part(text,text,uuid,uuid) to authenticated;
 revoke all on function public.resumen_caja(date),public.cerrar_caja(numeric,text),public.reingreso_garantia(text,text),public.asignar_repuesto(text,text,integer),public.apply_offline_operation(uuid,text,jsonb) from public,anon,authenticated;
 grant execute on function public.resumen_caja(date),public.cerrar_caja(numeric,text),public.reingreso_garantia(text,text),public.asignar_repuesto(text,text,integer),public.apply_offline_operation(uuid,text,jsonb) to authenticated;
 revoke all on function public.get_order_tracking(text) from public,anon,authenticated;
@@ -621,7 +791,7 @@ begin
     create publication supabase_realtime;
   end if;
   if not exists (select 1 from pg_publication where pubname='supabase_realtime' and puballtables) then
-    foreach table_name in array array['ordenes','inventario','tecnicos','movimientos_inventario','configuracion_taller']
+    foreach table_name in array array['ordenes','inventario','tecnicos','movimientos_inventario','configuracion_taller','cortes_caja','ventas_mostrador','devoluciones_repuestos']
     loop
       if not exists (select 1 from pg_publication_tables p where p.pubname='supabase_realtime' and p.schemaname='public' and p.tablename=table_name) then
         execute format('alter publication supabase_realtime add table public.%I',table_name);

@@ -6,13 +6,17 @@ import type {
   Order,
   OrderStatus,
   TechNote,
+  CounterSale,
 } from '../types';
+import { canAssignPart, canTransitionOrder, isPaymentMethod } from './operations';
+import type { PaymentMethod } from '../types';
 
 export interface WorkshopSnapshot {
   orders: Order[];
   inventory: InventoryItem[];
   clients: Client[];
   movements: InventoryMovement[];
+  sales: CounterSale[];
 }
 export type OfflineCommand =
   | { kind: 'createOrder'; order: Order }
@@ -29,10 +33,13 @@ export type OfflineCommand =
   | {
       kind: 'payment';
       orderId: string;
-      method: 'Efectivo' | 'Transferencia';
+      method: PaymentMethod;
       amount: number;
     }
+  | { kind: 'delivery'; orderId: string; from: OrderStatus; method: PaymentMethod; amount: number; at: string }
   | { kind: 'assignPart'; orderId: string; part: AssignedPart; itemId: string }
+  | { kind: 'removePart'; orderId: string; partId: string; itemId: string; movementId: string; at: string }
+  | { kind: 'sale'; sale: CounterSale }
   | {
       kind: 'stock';
       itemId: string;
@@ -59,12 +66,14 @@ export const CACHE_KEYS = {
   inventory: 'celmart_cache_inventory',
   clients: 'celmart_cache_clients',
   movements: 'celmart_cache_movements',
+  sales: 'celmart_cache_sales',
 } as const;
 const EMPTY: WorkshopSnapshot = {
   orders: [],
   inventory: [],
   clients: [],
   movements: [],
+  sales: [],
 };
 interface Journal {
   version: 1;
@@ -199,6 +208,7 @@ function validCacheRow(key: keyof WorkshopSnapshot, value: unknown): boolean {
       numbers(['reparacionesRealizadas', 'saldoPendiente']) &&
       Array.isArray(row.dispositivosFrecuentes)
     );
+  if (key === 'sales') return strings(['itemId','sku','nombre','createdAt']) && numbers(['cantidad','precioUnitario','costoUnitario','total']) && isPaymentMethod(row.metodoPago);
   return (
     strings(['repuestoNombre', 'tipo', 'autor', 'tiempo']) &&
     numbers(['cantidad'])
@@ -269,16 +279,16 @@ export function projectCommand(
       break;
     case 'status':
       editOrder((order) => {
-        if (strict && order.estado === 'Entregado')
+        if (strict && !canTransitionOrder(order.estado, command.to))
           throw new Error(
-            'La entrega original se conserva. Usa el reingreso por garantía.'
+            'El cambio de estado no está permitido. La entrega original se conserva; usa el reingreso por garantía.'
           );
         if (
           strict &&
           command.to === 'Entregado' &&
           (order.estado !== 'Listo' ||
-            !order.metodoPago ||
-            order.montoCobrado == null)
+            !isPaymentMethod(order.metodoPago) ||
+            !Number.isFinite(order.montoCobrado) || order.montoCobrado! < 0)
         )
           throw new Error(
             'Antes de entregar, marca Listo y registra el cobro.'
@@ -291,6 +301,15 @@ export function projectCommand(
             ? { fechaEntrega: order.fechaEntrega || command.at }
             : {}),
         };
+      });
+      break;
+    case 'delivery':
+      if (strict && (!isPaymentMethod(command.method) || !Number.isFinite(command.amount) || command.amount < 0 || !Number.isFinite(Date.parse(command.at))))
+        throw new Error('Revisa el importe y el método de pago antes de entregar.');
+      editOrder((order) => {
+        if (strict && (!canTransitionOrder(order.estado, 'Entregado') || order.estado !== command.from))
+          throw new Error('La orden debe estar Lista y sin otra entrega registrada.');
+        return { ...order, estado: 'Entregado', metodoPago: command.method, montoCobrado: Math.round(command.amount * 100) / 100, fechaEntrega: order.fechaEntrega || command.at, estadoActualizadoAt: command.at };
       });
       break;
     case 'note':
@@ -316,16 +335,18 @@ export function projectCommand(
       }));
       break;
     case 'payment':
-      if (strict && (!Number.isFinite(command.amount) || command.amount < 0))
+      if (strict && (!isPaymentMethod(command.method) || !Number.isFinite(command.amount) || command.amount < 0))
         throw new Error('Importe inválido.');
-      editOrder((order) => ({
-        ...order,
-        metodoPago: command.method,
-        montoCobrado: command.amount,
-      }));
+      editOrder((order) => {
+        if (strict && order.estado === 'Entregado') throw new Error('El cobro de una orden entregada está bloqueado.');
+        return { ...order, metodoPago: command.method, montoCobrado: Math.round(command.amount * 100) / 100 };
+      });
       break;
     case 'assignPart': {
       const item = result.inventory.find((item) => item.id === command.itemId);
+      const order = result.orders.find((order) => order.id === command.orderId);
+      if (strict && (!order || !canAssignPart(order)))
+        throw new Error('No se pueden asignar refacciones a una orden entregada. Registra un reingreso por garantía.');
       if (
         strict &&
         (!item ||
@@ -334,6 +355,9 @@ export function projectCommand(
           item.stockActual < command.part.cantidad)
       )
         throw new Error('Stock insuficiente o cantidad inválida.');
+      if (strict && order?.repuestosAsignados.some((part) => part.id === command.part.id))
+        throw new Error('Esta asignación ya está registrada.');
+      const assigned = item ? { ...command.part, nombre: item.nombre, sku: item.sku, precioUnitario: item.precioVenta, repuestoId:item.id, costoUnitario:item.costoCompra } : command.part;
       if (item)
         result.inventory = upsert(result.inventory, {
           ...item,
@@ -344,19 +368,45 @@ export function projectCommand(
           ...order.repuestosAsignados.filter(
             (part) => part.id !== command.part.id
           ),
-          command.part,
+          assigned,
         ];
         return {
           ...order,
           repuestosAsignados: parts,
-          totalEstimado:
-            order.costoManoObra +
-            parts.reduce(
-              (sum, part) => sum + part.cantidad * part.precioUnitario,
-              0
-            ),
+          totalEstimado: Math.round((order.totalEstimado + assigned.cantidad * assigned.precioUnitario) * 100) / 100,
         };
       });
+      if (item && order) result.movements = upsert(result.movements, {
+        id: assigned.id, repuestoId: item.id, repuestoNombre: item.nombre, codigoOrden: order.id,
+        tipo: 'salida', cantidad: -assigned.cantidad, autor: 'Taller', tiempo: 'Ahora',
+        motivo: `Asignado a orden ${order.id} (${order.dispositivo.modelo})`, costoUnitario: item.costoCompra,
+      });
+      break;
+    }
+    case 'removePart': {
+      const order=result.orders.find(row=>row.id===command.orderId);
+      const part=order?.repuestosAsignados.find(row=>row.id===command.partId);
+      const item=result.inventory.find(row=>row.id===command.itemId);
+      if(strict&&(!order||!canAssignPart(order)))throw new Error('Una orden entregada no permite devolver refacciones; registra un reingreso por garantía.');
+      if(strict&&(!part||!item||(part.repuestoId?item.id!==part.repuestoId:item.sku!==part.sku)||!Number.isInteger(part.cantidad)||part.cantidad<=0))throw new Error('La asignación o el repuesto ya no están disponibles. Revisa el inventario.');
+      if(!order||!part||!item)break;
+      result.inventory=upsert(result.inventory,{...item,stockActual:item.stockActual+part.cantidad});
+      result.orders=upsert(result.orders,{...order,repuestosAsignados:order.repuestosAsignados.filter(row=>row.id!==part.id),totalEstimado:Math.max(0,Math.round((order.totalEstimado-part.cantidad*part.precioUnitario)*100)/100)});
+      result.movements=upsert(result.movements,{id:command.movementId,repuestoId:item.id,repuestoNombre:item.nombre,codigoOrden:order.id,tipo:'entrada',cantidad:part.cantidad,autor:'Taller',tiempo:'Ahora',motivo:`Retirado de orden ${order.id}`,costoUnitario:part.costoUnitario});
+      break;
+    }
+    case 'sale': {
+      const draft=command.sale;
+      const item=result.inventory.find(row=>row.id===draft.itemId);
+      if(strict&&(!item||item.sku!==draft.sku||!Number.isInteger(draft.cantidad)||draft.cantidad<=0||item.stockActual<draft.cantidad))throw new Error('Sin existencias: revisa la cantidad disponible.');
+      if(strict&&(!isPaymentMethod(draft.metodoPago)||!Number.isFinite(Date.parse(draft.createdAt))||!item||![item.precioVenta,item.costoCompra,draft.precioUnitario,draft.costoUnitario].every(value=>Number.isFinite(value)&&value>=0)))throw new Error('Revisa el precio y el método de pago de la venta.');
+      if(strict&&item&&Math.round(draft.precioUnitario*100)!==Math.round(item.precioVenta*100))throw new Error('El precio cambió. Revisa el total antes de cobrar.');
+      if(strict&&result.sales.some(row=>row.id===draft.id))throw new Error('La venta ya está registrada.');
+      if(!item)break;
+      const sale={...draft,total:Math.round(draft.precioUnitario*draft.cantidad*100)/100,pendingSync:true};
+      result.inventory=upsert(result.inventory,{...item,stockActual:Math.max(0,item.stockActual-sale.cantidad)});
+      result.sales=upsert(result.sales,sale);
+      result.movements=upsert(result.movements,{id:sale.id,repuestoId:item.id,repuestoNombre:item.nombre,tipo:'salida',cantidad:-sale.cantidad,autor:'Mostrador',tiempo:'Ahora',motivo:'Venta de mostrador',costoUnitario:item.costoCompra});
       break;
     }
     case 'stock': {
@@ -422,6 +472,7 @@ export function createOfflineSync(options: Options) {
         options.storage,
         CACHE_KEYS.movements
       ),
+      sales: readArrayCache<CounterSale>(options.storage,CACHE_KEYS.sales),
     },
     queue: [],
   });
@@ -429,6 +480,8 @@ export function createOfflineSync(options: Options) {
     const raw = options.storage?.getItem(QUEUE_KEY);
     if (!raw) return fallback();
     const data = JSON.parse(raw) as Journal;
+    // Journals created before POS retain every queued operation and gain an empty sales mirror.
+    if(data?.base&&typeof data.base==='object'&&!Object.hasOwn(data.base,'sales'))data.base.sales=[];
     if (
       data.version !== 1 ||
       !validSnapshot(data.base) ||
@@ -695,8 +748,10 @@ export function createOfflineSync(options: Options) {
               ('itemId' in op.command &&
                 op.command.itemId === command.item.id) ||
               (op.command.kind === 'editInventory' &&
-                op.command.item.id === command.item.id)
+                op.command.item.id === command.item.id) ||
+              (op.command.kind==='sale'&&op.command.sale.itemId===command.item.id)
             );
+          if(command.kind==='assignPart')return op.command.kind==='removePart'&&op.command.orderId===command.orderId&&op.command.partId===command.part.id;
           return false;
         };
         lastError = null;

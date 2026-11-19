@@ -11,7 +11,7 @@ import {
   type SyncResult,
   type WorkshopSnapshot,
 } from './offlineSync';
-import type { Client, InventoryItem, InventoryMovement } from '../types';
+import type { Client, InventoryItem, InventoryMovement, CounterSale } from '../types';
 
 function browserStorage() {
   try {
@@ -70,6 +70,9 @@ export function mapMovementRow(
   return {
     id: String(row.id),
     repuestoNombre: String(row.repuesto_nombre || row.repuestoNombre || ''),
+    repuestoId: typeof row.repuesto_id === 'string' ? row.repuesto_id : undefined,
+    motivo: typeof row.motivo === 'string' ? row.motivo : undefined,
+    costoUnitario: row.costo_unitario == null ? undefined : Number(row.costo_unitario),
     codigoOrden:
       typeof row.codigo_orden === 'string' ? row.codigo_orden : undefined,
     tipo: row.tipo as InventoryMovement['tipo'],
@@ -77,6 +80,9 @@ export function mapMovementRow(
     autor: String(row.autor || 'Taller'),
     tiempo: String(row.tiempo || 'Reciente'),
   };
+}
+export function mapSaleRow(row:Record<string,unknown>):CounterSale {
+  return { id:String(row.id),itemId:String(row.item_id),sku:String(row.sku),nombre:String(row.nombre),cantidad:Number(row.cantidad),precioUnitario:Number(row.precio_unitario),costoUnitario:Number(row.costo_unitario),metodoPago:row.metodo_pago as CounterSale['metodoPago'],total:Number(row.total),createdAt:String(row.created_at),pendingSync:false };
 }
 export function inventoryToRow(item: InventoryItem) {
   return {
@@ -207,6 +213,7 @@ async function send(operation: PendingOperation): Promise<SyncResult> {
     inventory?: Record<string, unknown>[];
     clients?: Record<string, unknown>[];
     movements?: Record<string, unknown>[];
+    sales?: Record<string, unknown>[];
     replayed?: boolean;
   } | null;
   if (!data) throw new Error('No se confirmó la operación del servidor.');
@@ -222,12 +229,13 @@ async function send(operation: PendingOperation): Promise<SyncResult> {
       ? original.item.id
       : 'itemId' in original
         ? original.itemId
-        : null;
+        : original.kind==='sale'?original.sale.itemId:null;
   if (
     (orderId && !data.orders?.some((row) => row.id === orderId)) ||
     (itemId && !data.inventory?.some((row) => row.id === itemId)) ||
     (original.kind === 'createClient' &&
-      !data.clients?.some((row) => row.id === original.client.id))
+      !data.clients?.some((row) => row.id === original.client.id)) ||
+    (original.kind==='sale'&&!data.sales?.some(row=>row.id===original.sale.id))
   )
     throw new Error(
       'El servidor no devolvió el registro confirmado. Se conserva el cambio en la cola.'
@@ -238,6 +246,7 @@ async function send(operation: PendingOperation): Promise<SyncResult> {
       inventory: data.inventory?.map(mapInventoryRow),
       clients: data.clients?.map(mapClientRow),
       movements: data.movements?.map(mapMovementRow),
+      sales: data.sales?.map(mapSaleRow),
     },
     replayed: data.replayed,
   };

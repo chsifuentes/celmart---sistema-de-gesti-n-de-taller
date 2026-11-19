@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { supabase } from '../lib/supabase';
 import { offlineStore, withSyncTimeout } from '../lib/offlineRepository';
 import { browserOnline } from '../lib/offlineSync';
@@ -10,8 +10,10 @@ import {
 } from '../lib/operations';
 export function CashRegisterView({
   width = '80mm',
+  onOpenQuickSale,
 }: {
   width?: '80mm' | '58mm';
+  onOpenQuickSale?: () => void;
 }) {
   const [summary, setSummary] = useState<CashSummary | null>(null),
     [closed, setClosed] = useState<CashClose | null>(null),
@@ -19,43 +21,51 @@ export function CashRegisterView({
     [notes, setNotes] = useState(''),
     [error, setError] = useState(''),
     [busy, setBusy] = useState(false);
-  const refresh = async () => {
+  const mounted = useRef(false);
+  const refreshGeneration = useRef(0);
+  const closing = useRef(false);
+  const refresh = useCallback(async () => {
+    const generation = ++refreshGeneration.current;
+    const current = () => mounted.current && generation === refreshGeneration.current;
     if (
       !browserOnline() ||
       offlineStore.getSnapshot().offline ||
       offlineStore.getSnapshot().pending
     ) {
-      setError(
-        'Sincroniza los cambios de todos los dispositivos antes de consultar o cerrar la caja.'
-      );
+      if (current()) {
+        setSummary(null);
+        setClosed(null);
+        setError('Sincroniza los cambios de todos los dispositivos antes de consultar o cerrar la caja.');
+      }
       return;
     }
     try {
-      setError('');
-      const s = await withSyncTimeout<{ data: CashSummary; error: unknown }>(
-        () => supabase.rpc('resumen_caja', { p_fecha: workshopDate() })
-      );
+      if (current()) setError('');
+      const date = workshopDate();
+      const [s, c] = await Promise.all([
+        withSyncTimeout<{ data: CashSummary; error: unknown }>(
+          () => supabase.rpc('resumen_caja', { p_fecha: date })
+        ),
+        withSyncTimeout<{ data: CashClose | null; error: unknown }>(() =>
+          supabase.from('cortes_caja').select('*').eq('fecha', date).maybeSingle()
+        ),
+      ]);
       if (s.error) throw s.error;
-      setSummary(s.data);
-      const c = await withSyncTimeout<{
-        data: CashClose | null;
-        error: unknown;
-      }>(() =>
-        supabase
-          .from('cortes_caja')
-          .select('*')
-          .eq('fecha', workshopDate())
-          .maybeSingle()
-      );
       if (c.error) throw c.error;
-      setClosed(c.data);
+      if (current()) {
+        setSummary(s.data);
+        setClosed(c.data);
+      }
     } catch (e) {
-      setError(
-        e instanceof Error ? e.message : String((e as any).message || e)
-      );
+      if (current()) {
+        setSummary(null);
+        setClosed(null);
+        setError(e instanceof Error ? e.message : String((e as { message?: unknown })?.message || e));
+      }
     }
-  };
+  }, []);
   useEffect(() => {
+    mounted.current = true;
     void refresh();
     const c = supabase
       .channel('cash-register')
@@ -64,15 +74,35 @@ export function CashRegisterView({
         { event: '*', schema: 'public', table: 'ordenes' },
         () => void refresh()
       )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'movimientos_inventario' },
+        () => void refresh()
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'cortes_caja' },
+        () => void refresh()
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'ventas_mostrador' },
+        () => void refresh()
+      )
       .subscribe();
-    window.addEventListener('focus', refresh);
+    const triggerRefresh = () => void refresh();
+    const unsubscribe = offlineStore.subscribe(triggerRefresh);
+    window.addEventListener('focus', triggerRefresh);
     return () => {
+      mounted.current = false;
+      refreshGeneration.current++;
       void supabase.removeChannel(c);
-      window.removeEventListener('focus', refresh);
+      unsubscribe();
+      window.removeEventListener('focus', triggerRefresh);
     };
-  }, []);
+  }, [refresh]);
   const close = async () => {
-    if (busy) return;
+    if (closing.current) return;
     if (
       !browserOnline() ||
       offlineStore.getSnapshot().offline ||
@@ -81,33 +111,44 @@ export function CashRegisterView({
       setError('Sincroniza los cambios antes de cerrar la caja.');
       return;
     }
+    const amount = Number(opening);
+    if (!Number.isFinite(amount) || amount < 0) {
+      setError('Indica un monto de apertura válido.');
+      return;
+    }
+    closing.current = true;
     setBusy(true);
     setError('');
     try {
       const r = await withSyncTimeout<{ data: CashClose; error: unknown }>(() =>
         supabase.rpc('cerrar_caja', {
-          p_apertura: Number(opening),
+          p_apertura: amount,
           p_observaciones: notes,
         })
       );
       if (r.error) throw r.error;
+      if (!mounted.current) return;
       setClosed(r.data);
       await refresh();
     } catch (e) {
-      setError((e as any).message || 'No se pudo cerrar caja');
+      if (mounted.current) setError(e instanceof Error ? e.message : String((e as { message?: unknown })?.message || 'No se pudo cerrar caja'));
     } finally {
-      setBusy(false);
+      closing.current = false;
+      if (mounted.current) setBusy(false);
     }
   };
   const s = closed || summary;
   const money = (n: number) =>
     Number(n).toLocaleString('es-MX', { style: 'currency', currency: 'MXN' });
   return (
-    <section className="max-w-2xl space-y-4">
-      <h1 className="text-xl font-bold">Corte de Caja · {workshopDate()}</h1>
-      <p className="text-sm text-zinc-400">
+    <section className="max-w-2xl space-y-4 text-xs">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h1 className="text-sm font-semibold text-zinc-100">Corte de Caja · <span className="font-mono">{workshopDate()}</span></h1>
+        {onOpenQuickSale && <button type="button" onClick={onOpenQuickSale} className="rounded-md border border-zinc-800/80 bg-[#1c1c20] px-3.5 py-2 text-xs font-semibold text-zinc-200 hover:border-zinc-700">⚡ Venta Rápida Mostrador</button>}
+      </div>
+      <p className="text-xs text-zinc-400">
         Día de operación: Ciudad de México. Apertura + cobros − costo de
-        repuestos consumidos. El neto incluye transferencias; no representa sólo
+        repuestos consumidos. El neto incluye transferencias y tarjeta; no representa sólo
         billetes en caja.
       </p>
       {error && (
@@ -115,13 +156,13 @@ export function CashRegisterView({
           {error}
         </p>
       )}
-      <button onClick={() => void refresh()} className="underline min-h-11">
+      <button onClick={() => void refresh()} className="rounded-md border border-zinc-800/80 bg-[#1c1c20] px-3.5 py-2 text-xs font-semibold text-zinc-300 hover:border-zinc-700">
         Actualizar resumen
       </button>
       {s && (
         <div
           id="cash-ticket"
-          className="rounded-xl bg-white text-black p-5 space-y-2"
+          className="rounded-lg border border-zinc-800/80 bg-[#161619] text-zinc-200 p-4 space-y-2 font-mono text-xs"
         >
           <h2 className="font-bold">CELMART · CORTE DE CAJA</h2>
           <p>
@@ -129,6 +170,7 @@ export function CashRegisterView({
           </p>
           <p>Efectivo: {money(s.total_efectivo)}</p>
           <p>Transferencias: {money(s.total_transferencia)}</p>
+          <p>Tarjeta: {money(s.total_tarjeta ?? 0)}</p>
           <p>Repuestos consumidos: {money(s.gastos_repuestos)}</p>
           <p>Apertura: {money(closed?.monto_apertura ?? Number(opening))}</p>
           <strong>
@@ -168,7 +210,7 @@ export function CashRegisterView({
               required
               value={opening}
               onChange={(e) => setOpening(e.target.value)}
-              className="block bg-zinc-800 p-3 rounded"
+              className="mt-1 block rounded-md border border-zinc-800/80 bg-[#1c1c20] px-3 py-2 text-xs font-mono text-zinc-100 outline-none focus:border-zinc-700"
             />
           </label>
           <label className="block">
@@ -176,12 +218,12 @@ export function CashRegisterView({
             <textarea
               value={notes}
               onChange={(e) => setNotes(e.target.value)}
-              className="block w-full bg-zinc-800 p-3 rounded"
+              className="mt-1 block w-full rounded-md border border-zinc-800/80 bg-[#1c1c20] px-3 py-2 text-xs text-zinc-100 outline-none focus:border-zinc-700"
             />
           </label>
           <button
             disabled={busy || !summary || !!summary.sin_metodo}
-            className="bg-teal-400 text-black p-3 rounded disabled:opacity-40"
+            className="rounded-md bg-zinc-100 px-3.5 py-2 text-xs font-semibold text-zinc-950 hover:bg-white disabled:opacity-40"
           >
             {busy ? 'Cerrando…' : 'Cerrar Caja del Día'}
           </button>
@@ -190,7 +232,7 @@ export function CashRegisterView({
       {closed && (
         <button
           onClick={() => window.print()}
-          className="p-3 rounded bg-zinc-100 text-black"
+          className="rounded-md bg-zinc-100 px-3.5 py-2 text-xs font-semibold text-zinc-950 hover:bg-white"
         >
           Imprimir corte {width}
         </button>
@@ -200,7 +242,7 @@ export function CashRegisterView({
         consumos históricos sin costo guardado no se estiman. El corte guardado
         es una fotografía definitiva del cierre.
       </p>
-      <style>{`@media print{body *{visibility:hidden!important}#cash-ticket,#cash-ticket *{visibility:visible!important}#cash-ticket{position:absolute;top:0;left:0;width:${width};font:11px monospace;padding:3mm;box-sizing:border-box}@page{size:${width} auto;margin:0}}`}</style>
+      <style>{`@media print{body *{visibility:hidden!important}#cash-ticket,#cash-ticket *{visibility:visible!important;color:black!important}#cash-ticket{position:absolute;top:0;left:0;width:${width};font:11px monospace;padding:3mm;box-sizing:border-box;background:white!important;border:0!important}@page{size:${width} auto;margin:0}}`}</style>
     </section>
   );
 }

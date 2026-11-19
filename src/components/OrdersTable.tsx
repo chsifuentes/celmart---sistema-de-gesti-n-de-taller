@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { 
   Eye, 
   Printer, 
@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import { Order, OrderStatus, WhatsAppTemplateKey } from '../types';
 import { determineTemplateKeyForStatus } from '../lib/whatsapp';
+import { canTransitionOrder } from '../lib/operations';
 
 interface OrdersTableProps {
   orders: Order[];
@@ -22,7 +23,7 @@ interface OrdersTableProps {
   onSelectOrder: (order: Order) => void;
   onPrintTicket: (order: Order) => void;
   onOpenWhatsApp: (order: Order, templateKey?: WhatsAppTemplateKey) => void;
-  onUpdateOrderStatus: (orderId: string, newStatus: OrderStatus) => void;
+  onUpdateOrderStatus: (orderId: string, newStatus: OrderStatus) => void | Promise<void>;
   onDeleteOrder?: (orderId: string) => void | Promise<void>;
 }
 
@@ -40,6 +41,29 @@ export const OrdersTable: React.FC<OrdersTableProps> = ({
   const [openStatusDropdownId, setOpenStatusDropdownId] = useState<string | null>(null);
   const [orderToDelete, setOrderToDelete] = useState<Order | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [pendingStatus, setPendingStatus] = useState<string | null>(null);
+  const [statusError, setStatusError] = useState<string | null>(null);
+  const changingStatus = useRef(false);
+
+  const changeStatus = async (order: Order, next: OrderStatus) => {
+    if (changingStatus.current || !canTransitionOrder(order.estado, next)) return;
+    changingStatus.current = true;
+    setPendingStatus(order.id);
+    setStatusError(null);
+    setOpenStatusDropdownId(null);
+    try {
+      await onUpdateOrderStatus(order.id, next);
+      // Delivery may only have opened the payment confirmation. Its parent
+      // publishes the receipt after the financial transaction is committed.
+      if (next !== 'Entregado')
+        onOpenWhatsApp({ ...order, estado: next }, determineTemplateKeyForStatus(next));
+    } catch (error) {
+      setStatusError(error instanceof Error ? error.message : 'No se pudo cambiar el estado. Inténtalo de nuevo.');
+    } finally {
+      changingStatus.current = false;
+      setPendingStatus(null);
+    }
+  };
 
   const filterTabs = [
     'Todos',
@@ -137,6 +161,7 @@ export const OrdersTable: React.FC<OrdersTableProps> = ({
   const statusOptions: OrderStatus[] = [
     'Recibido',
     'En Diagnóstico',
+    'Esperando Presupuesto',
     'Esperando Repuesto',
     'En Reparación',
     'Listo',
@@ -190,6 +215,8 @@ export const OrdersTable: React.FC<OrdersTableProps> = ({
           })}
         </div>
       </div>
+
+      {statusError && <p role="alert" className="border-b border-zinc-800/80 px-4 py-2 text-[11px] text-rose-300">{statusError}</p>}
 
       {/* Table Content */}
       <div className="overflow-x-auto w-full">
@@ -287,27 +314,26 @@ export const OrdersTable: React.FC<OrdersTableProps> = ({
                     <div className="relative inline-block">
                       <button
                         onClick={() => setOpenStatusDropdownId(openStatusDropdownId === order.id ? null : order.id)}
-                        className="flex items-center gap-1 hover:opacity-90 transition-opacity"
-                        title="Cambiar estado rápido"
+                        disabled={order.estado === 'Entregado' || pendingStatus !== null}
+                        className="flex items-center gap-1 hover:opacity-90 transition-opacity disabled:cursor-default"
+                        title={order.estado === 'Entregado' ? 'Orden entregada: usa el reingreso por garantía' : 'Cambiar estado rápido'}
+                        aria-label={`Estado de ${order.id}: ${order.estado}`}
+                        aria-expanded={openStatusDropdownId === order.id && order.estado !== 'Entregado'}
                       >
                         {getStatusBadge(order.estado)}
-                        <ChevronDown className="w-3 h-3 text-zinc-400 opacity-0 group-hover:opacity-100 transition-opacity" />
+                        {order.estado !== 'Entregado' && <ChevronDown className="w-3 h-3 text-zinc-400 opacity-0 group-hover:opacity-100 transition-opacity" />}
                       </button>
 
-                      {openStatusDropdownId === order.id && (
+                      {openStatusDropdownId === order.id && order.estado !== 'Entregado' && (
                         <div className="absolute left-0 mt-1 w-44 rounded-lg bg-[#161619] border border-zinc-700/80 shadow-xl py-1 z-50 animate-in fade-in zoom-in-95 duration-100">
                           <div className="px-2.5 py-1 text-[10px] font-mono uppercase text-zinc-400 border-b border-zinc-800">
                             Cambiar Estado
                           </div>
-                          {statusOptions.map((st) => (
+                          {statusOptions.filter((st) => canTransitionOrder(order.estado, st)).map((st) => (
                             <button
                               key={st}
-                              onClick={() => {
-                                onUpdateOrderStatus(order.id, st);
-                                setOpenStatusDropdownId(null);
-                                // Disparar modal de confirmación WhatsApp con la plantilla correspondiente al nuevo estado
-                                onOpenWhatsApp({ ...order, estado: st }, determineTemplateKeyForStatus(st));
-                              }}
+                              onClick={() => { void changeStatus(order, st); }}
+                              disabled={pendingStatus !== null}
                               className={`w-full text-left px-2.5 py-1.5 text-xs hover:bg-zinc-800/80 flex items-center justify-between ${
                                 order.estado === st ? 'text-zinc-100 font-semibold bg-zinc-800/60' : 'text-zinc-400 hover:text-zinc-200'
                               }`}
@@ -380,6 +406,7 @@ export const OrdersTable: React.FC<OrdersTableProps> = ({
                       {/* Delete order */}
                       <button
                         onClick={() => setOrderToDelete(order)}
+                        disabled={order.estado === 'Entregado'}
                         className="p-1.5 rounded-lg text-zinc-400 hover:text-rose-400 hover:bg-rose-950/30 border border-transparent hover:border-rose-900/40 transition-colors"
                         title="Eliminar Orden de Servicio"
                       >

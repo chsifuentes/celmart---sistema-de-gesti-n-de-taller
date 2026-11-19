@@ -8,6 +8,7 @@ import {
   ImagePlus,
   LoaderCircle,
   CheckCircle2,
+  Trash2,
 } from 'lucide-react';
 import {
   CHECKLIST_BY_CATEGORY,
@@ -76,7 +77,7 @@ function EvidencePreview({
   );
 }
 
-import { warrantyActive, type PaymentMethod } from '../lib/operations';
+import { canAssignPart, canTransitionOrder, PAYMENT_METHODS, warrantyActive, type PaymentMethod } from '../lib/operations';
 interface DeviceDetailDrawerProps {
   onSaveLocation?: (id: string, value: string) => Promise<void>;
   onPrintLabel?: (order: Order) => void;
@@ -97,6 +98,7 @@ interface DeviceDetailDrawerProps {
     noteType: TechNote['tipo']
   ) => Promise<void>;
   onAssignPart: (orderId: string, part: AssignedPart) => Promise<void>;
+  onRemovePart?: (orderId: string, partId: string) => Promise<void>;
   onAddPhoto: (orderId: string, photoUrl: string) => Promise<void>;
   onPrintTicket: (order: Order) => void;
   onOpenWhatsApp: (order: Order, templateKey?: WhatsAppTemplateKey) => void;
@@ -116,6 +118,7 @@ export const DeviceDetailDrawer: React.FC<DeviceDetailDrawerProps> = ({
   autoWhatsApp = false,
   onAddNote,
   onAssignPart,
+  onRemovePart,
   onAddPhoto,
   onPrintTicket,
   onOpenWhatsApp,
@@ -129,6 +132,7 @@ export const DeviceDetailDrawer: React.FC<DeviceDetailDrawerProps> = ({
   const [newNoteType, setNewNoteType] =
     useState<TechNote['tipo']>('diagnostico');
   const [selectedInventoryPartId, setSelectedInventoryPartId] = useState('');
+  const [partQuantity, setPartQuantity] = useState('1');
   const [photoUpload, setPhotoUpload] = useState<{
     orderId: string;
     busy: boolean;
@@ -167,6 +171,7 @@ export const DeviceDetailDrawer: React.FC<DeviceDetailDrawerProps> = ({
     currentOrderId.current = order?.id;
     setNewNote('');
     setSelectedInventoryPartId('');
+    setPartQuantity('1');
     setPreviewPhoto(null);
     setActiveTab('expediente');
     setEditingLocation(false);
@@ -182,7 +187,7 @@ export const DeviceDetailDrawer: React.FC<DeviceDetailDrawerProps> = ({
   }, [order?.ubicacionFisica, editingLocation]);
 
   useEffect(() => {
-    const locked = order?.estado === 'Entregado' && !!order.metodoPago;
+    const locked = order?.estado === 'Entregado';
     if (locked || (!paymentDirty && pendingAction !== 'payment')) {
       setPaymentMethod(order?.metodoPago || 'Efectivo');
       setPaymentAmount(
@@ -200,6 +205,19 @@ export const DeviceDetailDrawer: React.FC<DeviceDetailDrawerProps> = ({
   ]);
 
   if (!isOpen || !order) return null;
+
+  const delivered = order.estado === 'Entregado';
+  const selectedPart = inventory.find((item) => item.id === selectedInventoryPartId);
+  const quantity = Number(partQuantity);
+  const partAvailabilityError = selectedPart
+    ? selectedPart.stockActual <= 0
+      ? 'Sin existencias. Reabastece este repuesto antes de asignarlo.'
+      : !Number.isInteger(quantity) || quantity <= 0
+        ? 'Indica una cantidad entera mayor que cero.'
+        : quantity > selectedPart.stockActual
+          ? `Stock insuficiente: hay ${selectedPart.stockActual} disponibles.`
+          : null
+    : null;
 
   const totalPiezas = order.repuestosAsignados.reduce(
     (sum, p) => sum + p.precioUnitario * p.cantidad,
@@ -298,29 +316,33 @@ export const DeviceDetailDrawer: React.FC<DeviceDetailDrawerProps> = ({
     if (!selectedInventoryPartId) return;
     const invItem = inventory.find((i) => i.id === selectedInventoryPartId);
     if (!invItem) return;
+    if (!canAssignPart(order) || partAvailabilityError) {
+      setSaveError({ orderId: order.id, message: partAvailabilityError || 'La orden entregada está cerrada. Registra un reingreso por garantía.' });
+      return;
+    }
 
     const saved = await runOrderAction('part', () =>
       onAssignPart(order.id, {
         id: `part-${Date.now()}-${Math.random().toString(36).slice(2)}`,
         nombre: invItem.nombre,
         sku: invItem.sku,
-        cantidad: 1,
+        cantidad: quantity,
         precioUnitario: invItem.precioVenta,
       })
     );
-    if (saved && currentOrderId.current === order.id)
+    if (saved && currentOrderId.current === order.id) {
       setSelectedInventoryPartId('');
+      setPartQuantity('1');
+    }
   };
 
   const handleStatusChange = async (newStatus: OrderStatus) => {
-    if (
-      newStatus === 'Entregado' &&
-      order.estado !== 'Listo' &&
-      order.estado !== 'Entregado'
-    ) {
+    if (!canTransitionOrder(order.estado, newStatus)) {
       setSaveError({
         orderId: order.id,
-        message: 'Marca el equipo como Listo antes de registrar su entrega.',
+        message: delivered
+          ? 'La orden entregada está cerrada. Registra un reingreso por garantía.'
+          : 'La transición no está permitida desde el estado actual.',
       });
       return;
     }
@@ -489,7 +511,7 @@ export const DeviceDetailDrawer: React.FC<DeviceDetailDrawerProps> = ({
               onChange={(e) => {
                 void handleStatusChange(e.target.value as OrderStatus);
               }}
-              disabled={pendingAction !== null}
+              disabled={pendingAction !== null || delivered}
               aria-label="Estado de la orden"
               className="bg-[#1c1c20] text-zinc-100 font-semibold px-3 py-1 rounded-lg border border-zinc-700/60 text-xs focus:outline-none focus:border-zinc-500 cursor-pointer"
             >
@@ -498,9 +520,7 @@ export const DeviceDetailDrawer: React.FC<DeviceDetailDrawerProps> = ({
                   key={st}
                   value={st}
                   disabled={
-                    st === 'Entregado' &&
-                    order.estado !== 'Listo' &&
-                    order.estado !== 'Entregado'
+                    st !== order.estado && !canTransitionOrder(order.estado, st)
                   }
                 >
                   {st}
@@ -587,10 +607,10 @@ export const DeviceDetailDrawer: React.FC<DeviceDetailDrawerProps> = ({
                       Método de pago
                       <select
                         aria-label="Método de pago"
-                        value={paymentMethod}
+                        value={delivered ? order.metodoPago || '' : paymentMethod}
                         disabled={
                           pendingAction !== null ||
-                          (order.estado === 'Entregado' && !!order.metodoPago)
+                          delivered
                         }
                         onChange={(event) => {
                           setPaymentMethod(event.target.value as PaymentMethod);
@@ -598,8 +618,8 @@ export const DeviceDetailDrawer: React.FC<DeviceDetailDrawerProps> = ({
                         }}
                         className="block rounded-md border border-zinc-800/80 bg-[#1c1c20] px-2.5 py-2 text-xs text-zinc-200 focus:outline-none focus:border-zinc-700 disabled:opacity-50"
                       >
-                        <option>Efectivo</option>
-                        <option>Transferencia</option>
+                        {delivered && !order.metodoPago && <option value="">Sin registrar</option>}
+                        {PAYMENT_METHODS.map((method) => <option key={method}>{method}</option>)}
                       </select>
                     </label>
                     <label className="space-y-1 text-[11px] text-zinc-400">
@@ -610,10 +630,11 @@ export const DeviceDetailDrawer: React.FC<DeviceDetailDrawerProps> = ({
                         min="0"
                         step="0.01"
                         required
-                        value={paymentAmount}
+                        value={delivered ? order.montoCobrado == null ? '' : String(order.montoCobrado) : paymentAmount}
+                        placeholder={delivered ? 'Sin registrar' : undefined}
                         disabled={
                           pendingAction !== null ||
-                          (order.estado === 'Entregado' && !!order.metodoPago)
+                          delivered
                         }
                         onChange={(event) => {
                           setPaymentAmount(event.target.value);
@@ -622,7 +643,7 @@ export const DeviceDetailDrawer: React.FC<DeviceDetailDrawerProps> = ({
                         className="block w-32 rounded-md border border-zinc-800/80 bg-[#1c1c20] px-2.5 py-2 text-xs font-mono text-zinc-200 focus:outline-none focus:border-zinc-700 disabled:opacity-50"
                       />
                     </label>
-                    {(!order.metodoPago || order.estado === 'Listo') && (
+                    {!delivered && (
                       <button
                         type="submit"
                         disabled={pendingAction !== null}
@@ -1053,12 +1074,14 @@ export const DeviceDetailDrawer: React.FC<DeviceDetailDrawerProps> = ({
                 <span className="text-[11px] font-mono uppercase font-semibold text-zinc-300 block">
                   ASIGNAR REFACCIÓN DESDE INVENTARIO
                 </span>
-                <div className="flex gap-2">
+                {delivered && <p className="text-[11px] text-zinc-500">Orden entregada: las refacciones y el presupuesto están cerrados. Usa el reingreso por garantía para una nueva reparación.</p>}
+                <div className="flex flex-wrap gap-2">
                   <select
+                    aria-label="Repuesto del inventario"
                     value={selectedInventoryPartId}
-                    disabled={pendingAction !== null}
+                    disabled={pendingAction !== null || !canAssignPart(order)}
                     onChange={(e) => setSelectedInventoryPartId(e.target.value)}
-                    className="flex-1 bg-[#1c1c20] text-zinc-100 px-3 py-1.5 rounded-lg border border-zinc-700/60 text-xs focus:outline-none"
+                    className="min-w-0 flex-1 bg-[#1c1c20] text-zinc-100 px-3 py-1.5 rounded-lg border border-zinc-800/80 text-xs focus:outline-none disabled:opacity-50"
                   >
                     <option value="">
                       — Seleccionar repuesto disponible —
@@ -1074,16 +1097,28 @@ export const DeviceDetailDrawer: React.FC<DeviceDetailDrawerProps> = ({
                       </option>
                     ))}
                   </select>
+                  <input
+                    aria-label="Cantidad de refacciones"
+                    type="number"
+                    min="1"
+                    step="1"
+                    value={partQuantity}
+                    onChange={(event) => setPartQuantity(event.target.value)}
+                    disabled={pendingAction !== null || !canAssignPart(order)}
+                    className="w-16 rounded-md border border-zinc-800/80 bg-[#1c1c20] px-2 py-1.5 font-mono text-xs text-zinc-200 outline-none focus:border-zinc-700 disabled:opacity-50"
+                  />
                   <button
                     onClick={handleAssignPartSubmit}
                     disabled={
-                      !selectedInventoryPartId || pendingAction !== null
+                      !selectedInventoryPartId || pendingAction !== null || !canAssignPart(order) || !!partAvailabilityError
                     }
                     className="px-3.5 py-1.5 rounded-lg bg-zinc-100 hover:bg-white disabled:opacity-40 text-zinc-950 font-semibold text-xs shrink-0"
                   >
                     {pendingAction === 'part' ? 'Guardando…' : '+ Asignar'}
                   </button>
                 </div>
+                {partAvailabilityError && <p role="alert" className="text-[11px] text-amber-300">{partAvailabilityError}</p>}
+                {!delivered && inventory.length > 0 && inventory.every((item) => item.stockActual <= 0) && <p role="status" className="text-[11px] text-zinc-500">Sin existencias disponibles en inventario.</p>}
               </div>
 
               {/* Parts list table */}
@@ -1095,13 +1130,14 @@ export const DeviceDetailDrawer: React.FC<DeviceDetailDrawerProps> = ({
                       <th className="py-2.5 px-3 text-center">CANTIDAD</th>
                       <th className="py-2.5 px-3 text-right">PRECIO</th>
                       <th className="py-2.5 px-3 text-right">TOTAL</th>
+                      {onRemovePart && !delivered && <th className="py-2.5 px-3 text-right">ACCIÓN</th>}
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-zinc-800/60 font-mono">
                     {order.repuestosAsignados.length === 0 ? (
                       <tr>
                         <td
-                          colSpan={4}
+                          colSpan={onRemovePart && !delivered ? 5 : 4}
                           className="py-4 text-center text-zinc-400 font-sans"
                         >
                           No se han asignado refacciones físicas a esta orden
@@ -1131,6 +1167,7 @@ export const DeviceDetailDrawer: React.FC<DeviceDetailDrawerProps> = ({
                           <td className="py-2.5 px-3 text-right font-bold text-zinc-100">
                             ${p.precioUnitario * p.cantidad}
                           </td>
+                          {onRemovePart && !delivered && <td className="py-2.5 px-3 text-right"><button type="button" aria-label={`Quitar refacción ${p.nombre} de ${order.id}`} title={`Reintegrar ${p.cantidad} al inventario y descontar del presupuesto`} disabled={pendingAction !== null} onClick={() => { void runOrderAction('part', () => onRemovePart(order.id, p.id)); }} className="inline-flex items-center gap-1 rounded-md border border-zinc-800/80 bg-[#1c1c20] px-2 py-1 text-[10px] font-sans text-zinc-400 hover:border-zinc-700 hover:text-rose-300 disabled:opacity-40"><Trash2 className="h-3 w-3"/> Quitar</button></td>}
                         </tr>
                       ))
                     )}

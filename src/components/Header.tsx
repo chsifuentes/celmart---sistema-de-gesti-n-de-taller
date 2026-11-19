@@ -114,6 +114,7 @@ interface HeaderProps {
   onDiscardSync?: () => void;
   globalSearch: string;
   setGlobalSearch: (query: string) => void;
+  onSearchSubmit?: (query: string) => void;
   onOpenNewOrder: () => void;
   urgentOrdersCount: number;
   warrantyNotifications?: { id: string; technician: string }[];
@@ -130,6 +131,7 @@ export function Header({
   onDiscardSync,
   globalSearch,
   setGlobalSearch,
+  onSearchSubmit,
   onOpenNewOrder,
   urgentOrdersCount,
   warrantyNotifications = [],
@@ -147,7 +149,7 @@ export function Header({
 
   useEffect(() => {
     const keydown = (event: KeyboardEvent) => {
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
+      if (!event.isComposing && (event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
         event.preventDefault();
         searchInputRef.current?.focus();
       }
@@ -190,6 +192,12 @@ export function Header({
           aria-label="Búsqueda global"
           value={globalSearch}
           onChange={(event) => setGlobalSearch(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' && !event.nativeEvent.isComposing && event.nativeEvent.keyCode !== 229) {
+              event.preventDefault();
+              onSearchSubmit?.(event.currentTarget.value);
+            }
+          }}
           placeholder="Buscar cliente por nombre o equipo por IMEI..."
           className="w-full h-8 bg-[#1c1c20] text-zinc-100 placeholder-zinc-500 text-xs pl-8 pr-7 sm:pr-12 rounded-md border border-zinc-700/60 focus:outline-none focus:border-zinc-500"
         />

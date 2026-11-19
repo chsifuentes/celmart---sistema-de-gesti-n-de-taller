@@ -8,6 +8,8 @@ export type OrderStatus =
   | 'Entregado'
   | 'Garantía';
 
+export type PaymentMethod = 'Efectivo' | 'Transferencia' | 'Tarjeta';
+
 export type DeviceCategory =
   | 'Smartphone'
   | 'Consola'
@@ -99,6 +101,8 @@ export interface AssignedPart {
   sku: string;
   cantidad: number;
   precioUnitario: number;
+  repuestoId?: string;
+  costoUnitario?: number;
 }
 
 export interface Order {
@@ -141,7 +145,7 @@ export interface Order {
   fechaIngreso?: string;
   estadoActualizadoAt?: string;
   ubicacionFisica?: string;
-  metodoPago?: 'Efectivo' | 'Transferencia';
+  metodoPago?: PaymentMethod;
   montoCobrado?: number;
   parentOrderId?: string;
   motivoGarantia?: string;
@@ -180,10 +184,27 @@ export interface InventoryMovement {
   id: string;
   repuestoNombre: string;
   codigoOrden?: string;
-  tipo: 'consumo' | 'reabastecimiento' | 'ajuste';
+  tipo: 'consumo' | 'reabastecimiento' | 'ajuste' | 'salida' | 'entrada';
+  motivo?: string;
+  repuestoId?: string;
+  costoUnitario?: number;
   cantidad: number; // e.g. -1 or +25
   autor: string;
   tiempo: string;
+}
+
+export interface CounterSale {
+  id: string;
+  itemId: string;
+  sku: string;
+  nombre: string;
+  cantidad: number;
+  precioUnitario: number;
+  costoUnitario: number;
+  metodoPago: PaymentMethod;
+  total: number;
+  createdAt: string;
+  pendingSync?: boolean;
 }
 
 export interface Client {

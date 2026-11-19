@@ -21,6 +21,7 @@ import type {
 import { uploadWorkshopPhoto } from '../lib/imageStorage';
 import { determineTemplateKeyForStatus } from '../lib/whatsapp';
 import { assignedTo, orderTiming } from '../lib/workbench';
+import { canTransitionOrder } from '../lib/operations';
 
 export type WorkshopLane = 'cola' | 'mesa' | 'listos';
 export type WorkshopFilter = 'all' | 'mine' | 'urgent';
@@ -118,7 +119,7 @@ export function filterWorkshopOrders(
 }
 
 type StatusAction = { status: OrderStatus; label: string };
-export function getWorkshopActions(status: OrderStatus): StatusAction[] {
+function workshopActionLabels(status: OrderStatus): StatusAction[] {
   switch (status) {
     case 'Recibido':
       return [{ status: 'En Diagnóstico', label: 'Iniciar diagnóstico' }];
@@ -148,6 +149,12 @@ export function getWorkshopActions(status: OrderStatus): StatusAction[] {
     default:
       return [];
   }
+}
+
+export function getWorkshopActions(status: OrderStatus): StatusAction[] {
+  return workshopActionLabels(status).filter((action) =>
+    canTransitionOrder(status, action.status)
+  );
 }
 
 export function getOrderUnlock(order: Order): {
@@ -529,7 +536,7 @@ function WorkshopOrderCard({
               void runAction(
                 'status',
                 () => onUpdateStatus(order.id, advance.status),
-                `Estado: ${advance.status}`
+                advance.status === 'Entregado' ? '' : `Estado: ${advance.status}`
               );
             }}
             disabled={pending !== null}

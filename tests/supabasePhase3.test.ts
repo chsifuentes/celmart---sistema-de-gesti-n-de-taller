@@ -87,22 +87,24 @@ test('public tracking broadcasts only orderId and never raw order or config fiel
   await client.removeChannel(other);
 });
 
-test('first delivery stamp is authoritative and survives re-delivery and arbitrary client timestamps', async () => {
+test('first financially confirmed delivery is authoritative and cannot be reopened or restamped', async () => {
   const client = createMockSupabaseClient();
   await client.from('ordenes').insert({ id: 'OS-90005', estado: 'Listo', entregado_at: '1990-01-01T00:00:00Z' });
   const before = await client.from('ordenes').select('*').eq('id', 'OS-90005').single();
   assert.equal(before.data.entregado_at, null);
-  const delivered = await client.from('ordenes').update({ estado: 'Entregado', entregado_at: '1990-01-01T00:00:00Z' }).eq('id', 'OS-90005').select('*').single();
+  const missingPayment = await client.from('ordenes').update({ estado: 'Entregado' }).eq('id', 'OS-90005');
+  assert.ok(missingPayment.error);
+  const delivered = await client.from('ordenes').update({ estado: 'Entregado', metodo_pago: 'Tarjeta', monto_cobrado: 250, entregado_at: '1990-01-01T00:00:00Z' }).eq('id', 'OS-90005').select('*').single();
   const timestamp = delivered.data.entregado_at;
   assert.ok(timestamp && Date.parse(timestamp) > Date.parse('2020-01-01'));
-  await client.from('ordenes').update({ estado: 'Garantía', entregado_at: null }).eq('id', 'OS-90005');
+  assert.ok((await client.from('ordenes').update({ estado: 'Garantía', entregado_at: null }).eq('id', 'OS-90005')).error);
   const again = await client.from('ordenes').update({ estado: 'Entregado', entregado_at: '2090-01-01T00:00:00Z' }).eq('id', 'OS-90005').select('*').single();
   assert.equal(again.data.entregado_at, timestamp);
   const tracking = await client.rpc('get_order_tracking', { p_order_id: 'OS-90005' });
   assert.equal(tracking.data.fechaEntrega, timestamp);
 });
 
-test('legacy delivered orders keep an unknown date until a real later delivery transition', async () => {
+test('legacy delivered orders preserve unknown dates and remain terminal without invented re-deliveries', async () => {
   const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
   let saved = JSON.stringify({ ordenes: [{ id: 'OS-90006', estado: 'Entregado', entregado_at: null }] });
   Object.defineProperty(globalThis, 'localStorage', {
@@ -114,9 +116,9 @@ test('legacy delivered orders keep an unknown date until a real later delivery t
     await client.from('ordenes').update({ notas_tecnicas: [], entregado_at: '1990-01-01' }).eq('id', 'OS-90006');
     const unchanged = await client.from('ordenes').update({ estado: 'Entregado' }).eq('id', 'OS-90006').select('*').single();
     assert.equal(unchanged.data.entregado_at, null);
-    await client.from('ordenes').update({ estado: 'Garantía' }).eq('id', 'OS-90006');
+    assert.ok((await client.from('ordenes').update({ estado: 'Garantía' }).eq('id', 'OS-90006')).error);
     const delivered = await client.from('ordenes').update({ estado: 'Entregado' }).eq('id', 'OS-90006').select('*').single();
-    assert.ok(delivered.data.entregado_at);
+    assert.equal(delivered.data.entregado_at, null);
   } finally {
     if (descriptor) Object.defineProperty(globalThis, 'localStorage', descriptor);
     else Reflect.deleteProperty(globalThis, 'localStorage');

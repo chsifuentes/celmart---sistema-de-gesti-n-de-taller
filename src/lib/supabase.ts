@@ -1,5 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 import { initialClients, initialInventoryItems, initialOrders } from '../data/initialData';
+import { canTransitionOrder } from './operations';
 
 const supabaseUrl = ((import.meta as any).env?.VITE_SUPABASE_URL || '').trim();
 const supabaseAnonKey = ((import.meta as any).env?.VITE_SUPABASE_ANON_KEY || '').trim();
@@ -106,6 +107,10 @@ export function createMockSupabaseClient() {
     ],
     movimientos_inventario: [],
     configuracion_taller: [],
+    consumos_repuestos: [],
+    devoluciones_repuestos: [],
+    ventas_mostrador: [],
+    cortes_caja: [],
   };
 
   type Change = { eventType: 'INSERT' | 'UPDATE' | 'DELETE'; schema: string; table: string; new: any; old: any };
@@ -113,6 +118,89 @@ export function createMockSupabaseClient() {
   const channels = new Set<{ name: string; listeners: Listener[]; subscribed: boolean }>();
   let persistenceEnabled = true;
   const clone = <T,>(value: T): T => JSON.parse(JSON.stringify(value));
+  const day = (date = new Date()) => new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/Mexico_City', year: 'numeric', month: '2-digit', day: '2-digit',
+  }).format(date);
+  const validPayment = (method: unknown, amount: unknown) =>
+    ['Efectivo', 'Transferencia', 'Tarjeta'].includes(String(method)) &&
+    typeof amount === 'number' && Number.isFinite(amount) && amount >= 0;
+  const assertOrderUpdate = (previous: any, next: any) => {
+    if (next.metodo_pago != null && !['Efectivo', 'Transferencia', 'Tarjeta'].includes(next.metodo_pago)) throw new Error('Método de pago inválido');
+    if (next.monto_cobrado != null && (!Number.isFinite(Number(next.monto_cobrado)) || Number(next.monto_cobrado) < 0)) throw new Error('Importe de cobro inválido');
+    if (!previous) return;
+    if (previous.estado === 'Entregado') {
+      if (next.estado !== previous.estado) throw new Error('La entrega original se conserva. Registra una suborden por garantía');
+      if (['repuestos_asignados', 'costo_mano_obra', 'total_estimado'].some((key) => JSON.stringify(previous[key]) !== JSON.stringify(next[key]))) throw new Error('La orden entregada no permite editar refacciones ni presupuesto. Registra un reingreso por garantía');
+      if (previous.metodo_pago != null && (next.metodo_pago !== previous.metodo_pago || next.monto_cobrado !== previous.monto_cobrado)) throw new Error('El cobro entregado es definitivo');
+    }
+    if (next.estado !== previous.estado && !canTransitionOrder(previous.estado, next.estado)) throw new Error('Cambio de estado no permitido. La garantía requiere una suborden vinculada');
+    if (next.estado === 'Entregado' && previous.estado !== 'Entregado') {
+      if (previous.estado !== 'Listo') throw new Error('Marca la orden como Listo antes de entregar');
+      if (!validPayment(next.metodo_pago, next.monto_cobrado)) throw new Error('Registra método e importe válido del cobro');
+      if (tables.cortes_caja?.some((close) => close.fecha === day())) throw new Error('La caja de hoy ya está cerrada');
+    }
+  };
+  const assignOrderPart = (order: any, sku: string, quantity: number, movementId: string) => {
+    if (order.estado === 'Entregado') throw new Error('Orden entregada no editable. Registra un reingreso por garantía');
+    const item = tables.inventario.find((row) => row.sku === sku);
+    if (!item || !Number.isInteger(quantity) || quantity <= 0 || Number(item.stock_actual ?? 0) < quantity) throw new Error('Sin existencias: stock insuficiente o cantidad inválida');
+    if (tables.cortes_caja?.some((close) => close.fecha === day())) throw new Error('La caja de hoy ya está cerrada');
+    if (tables.movimientos_inventario.some((row) => row.id === movementId)) throw new Error('El movimiento ya existe');
+    const now = new Date().toISOString();
+    const part = { id: movementId, nombre: item.nombre, sku: item.sku, cantidad: quantity, precioUnitario: Number(item.precio_venta ?? 0), repuestoId: item.id, costoUnitario: Number(item.costo_compra ?? 0) };
+    const movement = { id: movementId, repuesto_nombre: item.nombre, repuesto_id: item.id, codigo_orden: order.id, tipo: 'salida', cantidad: -quantity, autor: 'Taller', tiempo: 'Ahora', motivo: `Asignado a orden ${order.id} (${order.dispositivo_modelo ?? ''})`, costo_unitario: Number(item.costo_compra ?? 0), created_at: now };
+    tables.consumos_repuestos ??= [];
+    if (tables.consumos_repuestos.some((consumption) => consumption.orden_id === order.id && consumption.asignacion_id === movementId)) throw new Error('La asignación ya existe');
+    item.stock_actual -= quantity;
+    order.repuestos_asignados = [...(order.repuestos_asignados || []), part];
+    order.total_estimado = Math.round((Number(order.total_estimado ?? order.costo_mano_obra ?? 0) + quantity * Number(item.precio_venta ?? 0)) * 100) / 100;
+    tables.consumos_repuestos.push({ id: movementId, orden_id: order.id, sku: item.sku, cantidad: quantity, costo_unitario: Number(item.costo_compra ?? 0), asignacion_id: movementId, consumed_at: now });
+    tables.movimientos_inventario.unshift(movement);
+    return { item, movement };
+  };
+  const removeOrderPart = (order: any, partId: string, itemId: string, movementId: string) => {
+    if (order.estado === 'Entregado') throw new Error('La orden entregada no permite retirar refacciones. Registra un reingreso por garantía');
+    const parts = (order.repuestos_asignados ?? []).filter((part: any) => part.id === partId);
+    if (parts.length !== 1) throw new Error('La refacción asignada cambió o ya fue retirada. Actualiza el expediente');
+    const part = parts[0];
+    if (!Number.isInteger(part.cantidad) || part.cantidad <= 0 || !Number.isFinite(part.precioUnitario) || part.precioUnitario < 0) throw new Error('La asignación histórica tiene cantidades o precio inválidos. Revisa el Kardex');
+    const item = tables.inventario.find((row) => row.id === itemId);
+    if (!item || (part.repuestoId != null ? part.repuestoId !== item.id : part.sku !== item.sku)) throw new Error('No se pudo vincular la refacción al inventario. Revisa su SKU antes de retirar');
+    const available = tables.consumos_repuestos.filter((consumption) => consumption.orden_id === order.id && !tables.devoluciones_repuestos.some((returned) => returned.consumo_id === consumption.id));
+    let consumption = available.filter((consumption) => consumption.asignacion_id === partId || consumption.id === partId);
+    if (consumption.length === 0) consumption = available.filter((value) => value.asignacion_id == null && value.sku === part.sku && value.cantidad === part.cantidad);
+    if (consumption.length !== 1) throw new Error('No se pudo identificar un consumo histórico único. Revisa el Kardex antes de retirar; no se inventará su costo');
+    if (consumption[0].cantidad !== part.cantidad) throw new Error('La cantidad del consumo histórico no coincide. Revisa el Kardex');
+    if (tables.cortes_caja.some((close) => close.fecha === day())) throw new Error('La caja de hoy ya está cerrada');
+    if (!movementId || tables.movimientos_inventario.some((value) => value.id === movementId) || tables.devoluciones_repuestos.some((value) => value.orden_id === order.id && value.asignacion_id === partId)) throw new Error('La devolución ya existe');
+    const now = new Date().toISOString();
+    const returned = { id: movementId, consumo_id: consumption[0].id, orden_id: order.id, asignacion_id: partId, cantidad: part.cantidad, costo_unitario: consumption[0].costo_unitario, returned_at: now };
+    const movement = { id: movementId, repuesto_nombre: item.nombre, repuesto_id: item.id, codigo_orden: order.id, tipo: 'entrada', cantidad: part.cantidad, autor: 'Taller', tiempo: 'Ahora', motivo: `Retirado de orden ${order.id}`, costo_unitario: consumption[0].costo_unitario, created_at: now };
+    tables.devoluciones_repuestos.push(returned);
+    tables.movimientos_inventario.unshift(movement);
+    item.stock_actual = Number(item.stock_actual ?? 0) + part.cantidad;
+    order.repuestos_asignados = order.repuestos_asignados.filter((value: any) => value.id !== partId);
+    order.total_estimado = Math.round(Math.max(0, Number(order.total_estimado ?? order.costo_mano_obra ?? 0) - part.precioUnitario * part.cantidad) * 100) / 100;
+    return { item, movement, returned };
+  };
+  const makeCounterSale = (request: any) => {
+    if (!request || typeof request.id !== 'string' || !request.id.trim() || request.id.length > 100) throw new Error('Venta inválida');
+    if (tables.ventas_mostrador.some((sale) => sale.id === request.id)) throw new Error('El folio de venta ya existe. No se volverá a cobrar');
+    if (!validPayment(request.metodoPago, 0)) throw new Error('Selecciona un método de pago válido');
+    const item = tables.inventario.find((row) => row.id === request.itemId);
+    if (!item || item.sku !== request.sku) throw new Error('El producto cambió. Revisa el inventario');
+    if (!Number.isInteger(request.cantidad) || request.cantidad <= 0 || Number(item.stock_actual ?? 0) < request.cantidad) throw new Error('Sin existencias: stock insuficiente o cantidad inválida');
+    if (!Number.isFinite(Number(item.precio_venta)) || Number(item.precio_venta) < 0 || !Number.isFinite(Number(item.costo_compra ?? 0)) || Number(item.costo_compra ?? 0) < 0) throw new Error('El producto tiene precios o costos inválidos');
+    if (typeof request.precioUnitario !== 'number' || !Number.isFinite(request.precioUnitario) || request.precioUnitario < 0 || Math.round(request.precioUnitario * 100) !== Math.round(Number(item.precio_venta) * 100)) throw new Error('Conflicto: el precio de venta cambió. Revisa el importe y confirma nuevamente antes de cobrar');
+    if (tables.cortes_caja.some((close) => close.fecha === day())) throw new Error('La caja de hoy ya está cerrada');
+    if (tables.movimientos_inventario.some((movement) => movement.id === request.id)) throw new Error('El movimiento de venta ya existe');
+    const sale = { id: request.id, item_id: item.id, sku: item.sku, nombre: item.nombre, cantidad: request.cantidad, precio_unitario: Number(item.precio_venta), costo_unitario: Number(item.costo_compra ?? 0), metodo_pago: request.metodoPago, total: Math.round(request.cantidad * Number(item.precio_venta) * 100) / 100, created_at: new Date().toISOString() };
+    const movement = { id: sale.id, repuesto_nombre: item.nombre, repuesto_id: item.id, tipo: 'salida', cantidad: -sale.cantidad, autor: 'Mostrador', tiempo: 'Ahora', motivo: 'Venta de mostrador', costo_unitario: sale.costo_unitario, created_at: sale.created_at };
+    item.stock_actual -= sale.cantidad;
+    tables.ventas_mostrador.push(sale);
+    tables.movimientos_inventario.unshift(movement);
+    return { item, movement, sale };
+  };
   const notify = (change: Change) => {
     for (const channel of channels) {
       if (!channel.subscribed) continue;
@@ -171,7 +259,7 @@ export function createMockSupabaseClient() {
       if (event.key !== persistenceKey) return;
       const previous = clone(tables);
       restoreTables();
-      for (const table of ['ordenes', 'inventario', 'tecnicos', 'movimientos_inventario', 'configuracion_taller']) {
+      for (const table of ['ordenes', 'inventario', 'tecnicos', 'movimientos_inventario', 'configuracion_taller', 'cortes_caja', 'ventas_mostrador', 'devoluciones_repuestos']) {
         const oldRows = new Map((previous[table] ?? []).map((row: any) => [row.id, row]));
         const newRows = new Map((tables[table] ?? []).map((row: any) => [row.id, row]));
         for (const [id, row] of newRows) {
@@ -257,6 +345,10 @@ export function createMockSupabaseClient() {
         }));
         const validationError = configError(inserted);
         if (validationError) return { data: null, error: validationError };
+        if (tableName === 'ordenes') {
+          try { inserted.forEach((row) => assertOrderUpdate(undefined, row)); }
+          catch (error) { return { data: null, error: { message: (error as Error).message } }; }
+        }
         const ids = new Set(store.map((row) => row.id));
         for (const row of inserted) {
           if (ids.has(row.id)) {
@@ -290,6 +382,10 @@ export function createMockSupabaseClient() {
           }, previous);
           const validationError = configError([row]);
           if (validationError) return { data: null, error: validationError };
+          if (tableName === 'ordenes') {
+            try { assertOrderUpdate(previous, row); }
+            catch (error) { return { data: null, error: { message: (error as Error).message } }; }
+          }
           if (index >= 0) plannedStore[index] = row;
           else plannedStore.unshift(row);
           changed.push(row);
@@ -303,18 +399,24 @@ export function createMockSupabaseClient() {
 
       if (operation === 'update') {
         const updated: any[] = [];
+        const changes: Change[] = [];
         for (let i = 0; i < store.length; i++) {
           if (matches(store[i])) {
             const previous = store[i];
             const next = stampRow({ ...store[i], ...clone(pendingUpdateFields) }, previous);
             const validationError = configError([next]);
             if (validationError) return { data: null, error: validationError };
-            store[i] = next;
-            updated.push(store[i]);
-            notify({ eventType: 'UPDATE', schema: 'public', table: tableName, new: store[i], old: previous });
+            if (tableName === 'ordenes') {
+              try { assertOrderUpdate(previous, next); }
+              catch (error) { return { data: null, error: { message: (error as Error).message } }; }
+            }
+            updated.push(next);
+            changes.push({ eventType: 'UPDATE', schema: 'public', table: tableName, new: next, old: previous });
           }
         }
+        for (const change of changes) store[store.findIndex((row) => row.id === change.old.id)] = change.new;
         persistTables();
+        changes.forEach(notify);
         return result(updated);
       }
 
@@ -499,7 +601,10 @@ export function createMockSupabaseClient() {
     from(tableName: string) {
       return createQueryBuilder(tableName);
     },
-    async rpc(name: string, args: Record<string, any> = {}): Promise<{data:any;error:any}> {
+    async rpc(name: string, args: Record<string, any> = {}, lockHeld = false): Promise<{data:any;error:any}> {
+      if (!lockHeld && typeof navigator !== 'undefined' && navigator.locks) {
+        return navigator.locks.request(persistenceKey, () => this.rpc(name, args, true));
+      }
       if (name==='apply_offline_operation') {
         restoreTables();
         tables.celmart_sync_operations??=[];
@@ -510,27 +615,44 @@ export function createMockSupabaseClient() {
           if(prior){if(JSON.stringify(prior.command)!==JSON.stringify(command))throw new Error('El contenido de una operación confirmada no puede cambiar.');return {data:{...clone(prior.result),replayed:true},error:null};}
           let order=tables.ordenes.find(row=>row.id===command.orderId);
           let item=tables.inventario.find(row=>row.id===(command.itemId||command.row?.id));
-          let client:any=null,movement:any=null;
-          if(['status','note','location','photo','payment','assignPart'].includes(kind)&&!order)throw new Error('La orden ya no existe en el servidor.');
+          let client:any=null,movement:any=null,sale:any=null,returned:any=null;
+          if(['status','note','location','photo','payment','delivery','assignPart','removePart'].includes(kind)&&!order)throw new Error('La orden ya no existe en el servidor.');
           const old=clone(order||{});
           if(kind==='createOrder') {
             if(tables.ordenes.some(row=>row.id===command.row.id))throw new Error('El folio ya existe.');
             order={...clone(command.row),estado:'Recibido',created_at:command.row.created_at||new Date().toISOString(),estado_actualizado_at:new Date().toISOString(),fotos_evidencia:command.photos,repuestos_asignados:[],entregado_at:null};tables.ordenes.unshift(order);
           } else if(kind==='status') {
+            if(!['Recibido','En Diagnóstico','Esperando Presupuesto','Esperando Repuesto','En Reparación','Listo','Entregado','Garantía'].includes(command.to))throw new Error('Estado inválido');
             if(order.estado!==command.to) {
               if(order.estado!==command.from)throw new Error('Conflicto: otra persona cambió el estado.');
-              if(order.estado==='Entregado')throw new Error('La entrega original se conserva.');
-              if(command.to==='Entregado'&&(order.estado!=='Listo'||!order.metodo_pago||order.monto_cobrado==null))throw new Error('Marca Listo y registra el cobro.');
+              assertOrderUpdate(order,{...order,estado:command.to});
               order.estado=command.to;order.estado_actualizado_at=new Date().toISOString();if(command.to==='Entregado')order.entregado_at??=new Date().toISOString();
             }
           } else if(kind==='note')order.notas_tecnicas=[clone(command.note),...(order.notas_tecnicas||[]).filter((note:any)=>note.id!==command.note.id)];
           else if(kind==='location')order.ubicacion_fisica=command.value;
           else if(kind==='photo')order.fotos_evidencia=[...new Set([...(order.fotos_evidencia||[]),command.url])];
-          else if(kind==='payment'){order.metodo_pago=command.method;order.monto_cobrado=command.amount;}
+          else if(kind==='payment') {
+            if(!validPayment(command.method,command.amount))throw new Error('Cobro inválido');
+            assertOrderUpdate(order,{...order,metodo_pago:command.method,monto_cobrado:command.amount});
+            order.metodo_pago=command.method;order.monto_cobrado=Math.round(command.amount*100)/100;
+          }
+          else if(kind==='delivery') {
+            if(order.estado!==command.from)throw new Error('Conflicto: otra persona cambió el estado. Revisa la orden antes de entregar.');
+            if(!validPayment(command.method,command.amount))throw new Error('Cobro inválido');
+            assertOrderUpdate(order,{...order,estado:'Entregado',metodo_pago:command.method,monto_cobrado:command.amount});
+            order.estado='Entregado';order.metodo_pago=command.method;order.monto_cobrado=Math.round(command.amount*100)/100;
+            order.entregado_at=new Date().toISOString();order.estado_actualizado_at=order.entregado_at;
+          }
           else if(kind==='assignPart') {
-            const assigned=await this.rpc('asignar_repuesto',{p_order_id:order.id,p_sku:command.part.sku,p_cantidad:command.part.cantidad});
-            if(assigned.error)throw new Error(assigned.error.message);
-            order=tables.ordenes.find(row=>row.id===order.id);item=tables.inventario.find(row=>row.id===command.itemId);
+            if(!item||item.sku!==command.part.sku)throw new Error('El repuesto cambió. Revisa el inventario.');
+            const assigned=assignOrderPart(order,item.sku,command.part.cantidad,command.part.id||id);
+            item=assigned.item;movement=assigned.movement;
+          } else if(kind==='removePart') {
+            const removed=removeOrderPart(order,command.partId,command.itemId,command.movementId);
+            item=removed.item;movement=removed.movement;returned=removed.returned;
+          } else if(kind==='sale') {
+            const sold=makeCounterSale(command.sale);
+            item=sold.item;movement=sold.movement;sale=sold.sale;
           } else if(kind==='stock') {
             if(!item||!Number.isInteger(command.delta)||item.stock_actual+command.delta<0)throw new Error('Stock insuficiente para aplicar el ajuste pendiente.');
             item.stock_actual+=command.delta;movement={id,repuesto_nombre:item.nombre,tipo:command.delta>0?'reabastecimiento':'consumo',cantidad:command.delta,autor:'Taller',tiempo:'Ahora',created_at:new Date().toISOString()};tables.movimientos_inventario.unshift(movement);
@@ -545,27 +667,34 @@ export function createMockSupabaseClient() {
           else throw new Error('Tipo de operación no permitido.');
           const result:any={};
           if(order)result.orders=[clone(order)];if(item)result.inventory=[clone(item)];if(client)result.clients=[clone(client)];if(movement)result.movements=[clone(movement)];
+          if(sale)result.sales=[clone(sale)];
           tables.celmart_sync_operations.push({id,command:clone(command),result:clone(result)});persistTables();
           if(order)notify({eventType:kind==='createOrder'?'INSERT':'UPDATE',schema:'public',table:'ordenes',new:clone(order),old});
           if(item)notify({eventType:kind==='createInventory'?'INSERT':'UPDATE',schema:'public',table:'inventario',new:clone(item),old:{}});
+          if(movement)notify({eventType:'INSERT',schema:'public',table:'movimientos_inventario',new:clone(movement),old:{}});
+          if(sale)notify({eventType:'INSERT',schema:'public',table:'ventas_mostrador',new:clone(sale),old:{}});
+          if(returned)notify({eventType:'INSERT',schema:'public',table:'devoluciones_repuestos',new:clone(returned),old:{}});
           return {data:result,error:null};
         } catch(error){return {data:null,error:{message:(error as Error).message}};}
       }
       if (['resumen_caja','cerrar_caja','reingreso_garantia','asignar_repuesto'].includes(name)) {
         restoreTables();
-        const day=(d=new Date())=>new Intl.DateTimeFormat('en-CA',{timeZone:'America/Mexico_City',year:'numeric',month:'2-digit',day:'2-digit'}).format(d);
         tables.cortes_caja??=[]; tables.consumos_repuestos??=[];
         try {
           if(name==='resumen_caja'||name==='cerrar_caja') {
             const date=name==='cerrar_caja'?day():args.p_fecha;
             const orders=tables.ordenes.filter(o=>o.estado==='Entregado'&&o.entregado_at&&day(new Date(o.entregado_at))===date);
-            const sum=(method:string)=>orders.filter(o=>o.metodo_pago===method).reduce((n,o)=>n+Number(o.monto_cobrado||0),0);
-            const data={fecha:date,total_efectivo:sum('Efectivo'),total_transferencia:sum('Transferencia'),sin_metodo:orders.filter(o=>!o.metodo_pago||o.monto_cobrado==null).length,gastos_repuestos:tables.consumos_repuestos.filter(o=>day(new Date(o.consumed_at))===date).reduce((n,o)=>n+o.cantidad*o.costo_unitario,0)};
+            const sales=tables.ventas_mostrador.filter((sale)=>day(new Date(sale.created_at))===date);
+            const sum=(method:string)=>orders.filter(o=>o.metodo_pago===method).reduce((n,o)=>n+Number(o.monto_cobrado||0),0)+sales.filter((sale)=>sale.metodo_pago===method).reduce((n,sale)=>n+Number(sale.total),0);
+            const costs=tables.consumos_repuestos.filter(o=>day(new Date(o.consumed_at))===date).reduce((n,o)=>n+o.cantidad*o.costo_unitario,0)
+              +sales.reduce((n,sale)=>n+sale.cantidad*sale.costo_unitario,0)
+              -tables.devoluciones_repuestos.filter((value)=>day(new Date(value.returned_at))===date).reduce((n,value)=>n+value.cantidad*value.costo_unitario,0);
+            const data={fecha:date,total_efectivo:sum('Efectivo'),total_transferencia:sum('Transferencia'),total_tarjeta:sum('Tarjeta'),sin_metodo:orders.filter(o=>!o.metodo_pago||o.monto_cobrado==null).length,gastos_repuestos:costs};
             if(name==='resumen_caja')return {data,error:null};
             if(!Number.isFinite(args.p_apertura)||args.p_apertura<0)throw new Error('Apertura inválida');
             if(data.sin_metodo)throw new Error('Hay entregas sin método de pago');
             if(tables.cortes_caja.some(c=>c.fecha===date))throw new Error('La caja ya está cerrada');
-            const closed={...data,id:'CAJA-'+date,monto_apertura:args.p_apertura,total_neto:Math.round((args.p_apertura+data.total_efectivo+data.total_transferencia-data.gastos_repuestos)*100)/100,cerrado_por:'Demo',observaciones:args.p_observaciones||'',created_at:new Date().toISOString()};tables.cortes_caja.push(closed);persistTables();return {data:clone(closed),error:null};
+            const closed={...data,id:'CAJA-'+date,monto_apertura:args.p_apertura,total_neto:Math.round((args.p_apertura+data.total_efectivo+data.total_transferencia+data.total_tarjeta-data.gastos_repuestos)*100)/100,cerrado_por:'Demo',observaciones:args.p_observaciones||'',created_at:new Date().toISOString()};tables.cortes_caja.push(closed);persistTables();notify({eventType:'INSERT',schema:'public',table:'cortes_caja',new:closed,old:{}});return {data:clone(closed),error:null};
           }
           const o=tables.ordenes.find(o=>o.id===args.p_order_id);if(!o)throw new Error('Orden no encontrada');
           if(name==='reingreso_garantia') {
@@ -574,9 +703,12 @@ export function createMockSupabaseClient() {
             const n=Math.max(0,...tables.ordenes.filter(c=>c.parent_order_id===o.id).map(c=>Number(c.id.split('-G').pop())))+1;
             const child={...clone(o),id:o.id+'-G'+n,parent_order_id:o.id,motivo_garantia:args.p_motivo,estado:'Garantía',estado_actualizado_at:new Date().toISOString(),ubicacion_fisica:null,entregado_at:null,metodo_pago:null,monto_cobrado:null,costo_mano_obra:0,total_estimado:0,repuestos_asignados:[],fotos_evidencia:[],checklist_json:{},falla_declarada:args.p_motivo,created_at:new Date().toISOString(),notas_tecnicas:[{id:crypto.randomUUID(),autor:'Recepción',contenido:'Reingreso asignado a '+(o.tecnico_nombre||'Por asignar')+': '+args.p_motivo,fecha:new Date().toISOString(),tipo:'general'}]};tables.ordenes.unshift(child);persistTables();notify({eventType:'INSERT',schema:'public',table:'ordenes',new:child,old:{}});return {data:clone(child),error:null};
           }
-          const i=tables.inventario.find(i=>i.sku===args.p_sku);if(!i||!Number.isInteger(args.p_cantidad)||args.p_cantidad<=0||i.stock_actual<args.p_cantidad||o.estado==='Entregado')throw new Error('Stock insuficiente o cantidad inválida');
-          if(tables.cortes_caja.some(c=>c.fecha===day()))throw new Error('Caja cerrada');
-          i.stock_actual-=args.p_cantidad;const part={id:crypto.randomUUID(),nombre:i.nombre,sku:i.sku,cantidad:args.p_cantidad,precioUnitario:i.precio_venta};o.repuestos_asignados=[...(o.repuestos_asignados||[]),part];o.total_estimado=Number(o.costo_mano_obra)+o.repuestos_asignados.reduce((n:number,p:any)=>n+p.cantidad*p.precioUnitario,0);tables.consumos_repuestos.push({id:crypto.randomUUID(),orden_id:o.id,sku:i.sku,cantidad:args.p_cantidad,costo_unitario:i.costo_compra,consumed_at:new Date().toISOString()});persistTables();notify({eventType:'UPDATE',schema:'public',table:'ordenes',new:o,old:{}});return {data:clone(o),error:null};
+          const assigned=assignOrderPart(o,args.p_sku,args.p_cantidad,crypto.randomUUID());
+          persistTables();
+          notify({eventType:'UPDATE',schema:'public',table:'ordenes',new:o,old:{}});
+          notify({eventType:'UPDATE',schema:'public',table:'inventario',new:assigned.item,old:{}});
+          notify({eventType:'INSERT',schema:'public',table:'movimientos_inventario',new:assigned.movement,old:{}});
+          return {data:clone(o),error:null};
         }catch(e){return {data:null,error:{message:(e as Error).message}};}
       }
       if (name !== 'get_order_tracking') return { data: null, error: { code: 'PGRST202', message: 'Función no encontrada.' } };

@@ -10,12 +10,26 @@ interface ThermalReceiptModalProps {
   onClose: () => void;
   config: WorkshopConfig;
   onSendDelivery?: (order: Order) => void;
+  autoPrint?: boolean;
+  pendingSync?: boolean;
 }
 
-export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({ order, isOpen, onClose, config, onSendDelivery }) => {
+export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({ order, isOpen, onClose, config, onSendDelivery, autoPrint=false, pendingSync=false }) => {
   const [copied, setCopied] = useState(false);
   const [copyError, setCopyError] = useState('');
   const copyTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const printedOrder = useRef<string|null>(null);
+
+  useEffect(() => {
+    if(!isOpen){printedOrder.current=null;return;}
+    if(!autoPrint||!order||printedOrder.current===order.id)return;
+    const id=order.id;
+    const frame=window.requestAnimationFrame(()=>{
+      printedOrder.current=id;
+      try{window.print();}catch{setCopyError('No se pudo abrir la impresión. Usa el botón Imprimir.');}
+    });
+    return ()=>window.cancelAnimationFrame(frame);
+  }, [autoPrint,isOpen,order?.id]);
 
   useEffect(() => {
     setCopied(false);
@@ -26,7 +40,8 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({ order,
   if (!isOpen || !order) return null;
 
   const totalPiezas = order.repuestosAsignados.reduce((sum, part) => sum + part.precioUnitario * part.cantidad, 0);
-  const totalCobro = order.costoManoObra + totalPiezas;
+  const subtotal = order.costoManoObra + totalPiezas;
+  const totalCobro = order.estado==='Entregado' ? order.montoCobrado ?? order.totalEstimado : order.totalEstimado;
   const money = (value: number) => `${config.simboloMoneda || '$'}${value.toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   const paperWidth = config.anchoTicket === '58mm' ? '58mm' : '80mm';
   const trackingUrl = getTrackingUrl(order.id);
@@ -54,6 +69,8 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({ order,
       '', `Mano de obra: ${money(order.costoManoObra)} MXN`,
       ...order.repuestosAsignados.map((part) => `${part.cantidad} × ${part.nombre}: ${money(part.cantidad * part.precioUnitario)} MXN`),
       `${isDelivery ? 'Total del servicio' : 'Total estimado'}: ${money(totalCobro)} MXN`,
+      ...(order.metodoPago ? [`Método de pago: ${order.metodoPago}`, `Cobrado: ${money(order.montoCobrado??0)} MXN`] : []),
+      ...(pendingSync ? ['COPIA LOCAL · PENDIENTE DE SINCRONIZAR'] : []),
       '', `Garantía: ${order.garantiaDias} días conforme a la política del taller.`, config.politicaGarantiaTexto,
       '', `Seguimiento de tu reparación: ${trackingUrl}`, '', 'Firma de conformidad del cliente: ____________________',
     ].join('\n');
@@ -152,10 +169,12 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({ order,
               {order.repuestosAsignados.map((part) => (
                 <div key={part.id} className="flex justify-between gap-2 text-[9px]"><span>{part.cantidad} × {part.nombre}</span><span className="shrink-0">{money(part.precioUnitario * part.cantidad)}</span></div>
               ))}
+              {isDelivery&&subtotal>totalCobro&&<div className="flex justify-between gap-2 text-[9px]"><span>Descuento final:</span><span>−{money(subtotal-totalCobro)}</span></div>}
               <div className="flex justify-between gap-2 font-bold text-[11px] pt-1 border-t border-zinc-300"><span>{isDelivery ? 'TOTAL DEL SERVICIO:' : 'TOTAL ESTIMADO:'}</span><span className="shrink-0">{money(totalCobro)} MXN</span></div>
             </div>
 
             {order.metodoPago && <p className="text-[9px]">Cobrado: {money(order.montoCobrado??0)} · {order.metodoPago}</p>}
+            {pendingSync&&<p className="text-[9px] font-bold text-center">COPIA LOCAL · PENDIENTE DE SINCRONIZAR</p>}
             <div className="py-3 text-center border-b border-dashed border-zinc-400" style={{ breakInside: 'avoid' }}>
               <p className="text-[10px] font-bold">Sigue tu reparación</p>
               <QRCodeSVG value={trackingUrl} size={144} level="M" marginSize={4} bgColor="#ffffff" fgColor="#000000" title={`Seguimiento de la orden ${order.id}`} style={{ width: '32mm', height: '32mm', margin: '1mm auto', display: 'block' }} />

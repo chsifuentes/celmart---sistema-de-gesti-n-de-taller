@@ -35,6 +35,7 @@ const fixture = (): WorkshopSnapshot => ({
   inventory: [{ ...initialInventoryItems[0], stockActual: 5 }],
   clients: [],
   movements: [],
+  sales: [],
 });
 const note = (text: string) => ({
   kind: 'note' as const,
@@ -57,6 +58,62 @@ const stock = () => ({
 const noSend = async () => {
   throw new Error('Network must not be called');
 };
+
+test('part assignment projects stock, priced budget and one linked Kardex exit together', () => {
+  const base=fixture();
+  const item=base.inventory[0], order=base.orders[0];
+  const part={id:crypto.randomUUID(),sku:item.sku,nombre:'Untrusted label',cantidad:2,precioUnitario:0};
+  const next=projectCommand(base,{kind:'assignPart',orderId:order.id,itemId:item.id,part},true);
+  assert.equal(base.inventory[0].stockActual,5);
+  assert.equal(next.inventory[0].stockActual,3);
+  assert.equal(next.orders[0].repuestosAsignados.at(-1)!.precioUnitario,item.precioVenta);
+  assert.equal(next.orders[0].totalEstimado,order.totalEstimado+2*item.precioVenta);
+  assert.equal(next.movements.length,1);
+  assert.equal(next.movements[0].id,part.id);
+  assert.equal(next.movements[0].tipo,'salida');
+  assert.equal(next.movements[0].cantidad,-2);
+  assert.equal(next.movements[0].motivo,`Asignado a orden ${order.id} (${order.dispositivo.modelo})`);
+  assert.equal(next.movements[0].costoUnitario,item.costoCompra);
+  assert.throws(()=>projectCommand(next,{kind:'assignPart',orderId:order.id,itemId:item.id,part},true),/ya está registrada/);
+});
+
+test('zero stock and delivered parents reject assignments before changing inventory or budgets', () => {
+  const base=fixture(), item=base.inventory[0], order=base.orders[0];
+  const command={kind:'assignPart' as const,orderId:order.id,itemId:item.id,part:{id:crypto.randomUUID(),sku:item.sku,nombre:item.nombre,cantidad:1,precioUnitario:item.precioVenta}};
+  assert.throws(()=>projectCommand({...base,inventory:[{...item,stockActual:0}]},command,true),/Stock insuficiente/);
+  assert.throws(()=>projectCommand({...base,orders:[{...order,estado:'Entregado'}]},command,true),/entregada/);
+  assert.equal(base.inventory[0].stockActual,5);
+  assert.equal(base.movements.length,0);
+});
+
+test('offline delivery journals its card payment, discount and final state as one durable command', async () => {
+  const storage=new MemoryStorage(), base=fixture();
+  base.orders[0]={...base.orders[0],estado:'Listo',totalEstimado:1000,metodoPago:undefined,montoCobrado:undefined};
+  const store=createOfflineSync({storage,online:()=>false,send:noSend});
+  await store.bindOwner('qa');await store.replaceRemote(base);
+  await store.submit({kind:'delivery',orderId:base.orders[0].id,from:'Listo',method:'Tarjeta',amount:850,at:'2026-11-02T18:00:00Z'});
+  const journal=JSON.parse(storage.getItem(QUEUE_KEY)!);
+  assert.equal(journal.queue.length,1);assert.equal(journal.queue[0].command.kind,'delivery');
+  const restored=createOfflineSync({storage,online:()=>false,send:noSend});
+  const delivered=restored.getSnapshot().data.orders[0];
+  assert.equal(delivered.estado,'Entregado');assert.equal(delivered.metodoPago,'Tarjeta');
+  assert.equal(delivered.montoCobrado,850);assert.equal(delivered.totalEstimado,1000);
+  assert.equal(delivered.fechaEntrega,'2026-11-02T18:00:00Z');
+  await assert.rejects(store.submit({kind:'status',orderId:delivered.id,from:'Entregado',to:'En Reparación',at:new Date().toISOString()}),/garantía/);
+  await assert.rejects(store.submit({kind:'payment',orderId:delivered.id,method:'Efectivo',amount:1}),/bloqueado/);
+  assert.equal(restored.getSnapshot().pending,1);
+});
+
+test('delivery requires a ready order, a valid method and a nonnegative amount', () => {
+  const base=fixture(), order=base.orders[0];
+  const command={kind:'delivery' as const,orderId:order.id,from:'Listo' as const,method:'Efectivo' as const,amount:100,at:new Date().toISOString()};
+  assert.throws(()=>projectCommand(base,command,true),/Lista/);
+  const ready={...base,orders:[{...order,estado:'Listo' as const}]};
+  assert.throws(()=>projectCommand(ready,{...command,amount:-1},true),/importe/);
+  assert.throws(()=>projectCommand(ready,{...command,amount:Number.NaN},true),/importe/);
+  assert.throws(()=>projectCommand(ready,{kind:'status',orderId:order.id,from:'Listo',to:'Entregado',at:command.at},true),/cobro/);
+  assert.equal(ready.orders[0].estado,'Listo');
+});
 
 test('cached arrays hydrate synchronously, malformed values stay safe, and empty remote lists replace stale data', async () => {
   const storage = new MemoryStorage();
@@ -338,4 +395,68 @@ test('explicit rejection recovery removes a failed local creation with its depen
   await store.discardRejected();
   assert.equal(store.getSnapshot().pending, 0);
   assert.equal(store.getSnapshot().data.inventory.length, 1);
+});
+
+test('pre-POS journals upgrade without losing their owner, cached orders or pending FIFO operations', async () => {
+  const storage=new MemoryStorage();
+  const legacy=fixture() as Partial<WorkshopSnapshot>;
+  delete legacy.sales;
+  const operation={id:crypto.randomUUID(),ownerId:'qa',createdAt:new Date().toISOString(),command:note('legacy-kept')};
+  storage.setItem(QUEUE_KEY,JSON.stringify({version:1,ownerId:'qa',base:legacy,queue:[operation]}));
+  const store=createOfflineSync({storage,online:()=>false,send:noSend});
+  assert.equal(store.getSnapshot().error,null);
+  assert.equal(store.getSnapshot().pending,1);
+  assert.equal(store.getSnapshot().data.orders[0].notasTecnicas[0].contenido,'legacy-kept');
+  assert.deepEqual(store.getSnapshot().data.sales,[]);
+  await store.enqueue(note('new-kept'));
+  const saved=JSON.parse(storage.getItem(QUEUE_KEY)!);
+  assert.equal(saved.queue[0].id,operation.id);
+  assert.equal(saved.queue.length,2);
+  assert.deepEqual(saved.base.sales,[]);
+});
+
+test('offline part return restores its full quantity by stable inventory ID and reverses its original price once', async () => {
+  const storage=new MemoryStorage(),base=fixture(),item=base.inventory[0],order=base.orders[0];
+  const store=createOfflineSync({storage,online:()=>false,send:noSend});
+  await store.bindOwner('qa');await store.replaceRemote(base);
+  const part={id:crypto.randomUUID(),sku:item.sku,nombre:item.nombre,cantidad:2,precioUnitario:item.precioVenta};
+  await store.submit({kind:'assignPart',orderId:order.id,itemId:item.id,part});
+  const assigned=store.getSnapshot().data.orders[0].repuestosAsignados.find(row=>row.id===part.id)!;
+  assert.equal(assigned.repuestoId,item.id);
+  const movementId=crypto.randomUUID();
+  await store.submit({kind:'removePart',orderId:order.id,partId:part.id,itemId:item.id,movementId,at:new Date().toISOString()});
+  const restored=createOfflineSync({storage,online:()=>false,send:noSend});
+  const state=restored.getSnapshot();
+  assert.equal(state.pending,2);
+  assert.equal(state.data.inventory[0].stockActual,5);
+  assert.equal(state.data.orders[0].totalEstimado,order.totalEstimado);
+  assert.equal(state.data.orders[0].repuestosAsignados.some(row=>row.id===part.id),false);
+  assert.equal(state.data.movements.find(row=>row.id===movementId)!.cantidad,2);
+  assert.equal(state.data.movements.find(row=>row.id===movementId)!.motivo,`Retirado de orden ${order.id}`);
+  await assert.rejects(store.submit({kind:'removePart',orderId:order.id,partId:part.id,itemId:item.id,movementId:crypto.randomUUID(),at:new Date().toISOString()}),/asignación/);
+  const renamed={...base,orders:[{...order,repuestosAsignados:[{...assigned,repuestoId:item.id}]}],inventory:[{...item,sku:'SKU-RENAMED',precioVenta:9999}]};
+  const returned=projectCommand(renamed,{kind:'removePart',orderId:order.id,partId:part.id,itemId:item.id,movementId,at:new Date().toISOString()},true);
+  assert.equal(returned.inventory[0].stockActual,7);
+  assert.equal(returned.orders[0].totalEstimado,Math.max(0,order.totalEstimado-2*assigned.precioUnitario));
+});
+
+test('offline POS persists one sale, stock and Kardex without creating an order and keeps the quoted total during replay', async () => {
+  const storage=new MemoryStorage(),base=fixture(),item=base.inventory[0];
+  const store=createOfflineSync({storage,online:()=>false,send:noSend});
+  await store.bindOwner('qa');await store.replaceRemote(base);
+  const sale={id:crypto.randomUUID(),itemId:item.id,sku:item.sku,nombre:item.nombre,cantidad:2,precioUnitario:item.precioVenta,costoUnitario:item.costoCompra,metodoPago:'Transferencia' as const,total:item.precioVenta*2,createdAt:new Date().toISOString()};
+  await store.submit({kind:'sale',sale});
+  const restored=createOfflineSync({storage,online:()=>false,send:noSend});
+  assert.equal(restored.getSnapshot().pending,1);
+  assert.equal(restored.getSnapshot().data.inventory[0].stockActual,3);
+  assert.equal(restored.getSnapshot().data.orders.length,base.orders.length);
+  assert.equal(restored.getSnapshot().data.sales[0].id,sale.id);
+  assert.equal(restored.getSnapshot().data.sales[0].pendingSync,true);
+  assert.equal(restored.getSnapshot().data.movements[0].motivo,'Venta de mostrador');
+  assert.equal(JSON.parse(storage.getItem(CACHE_KEYS.sales)!)[0].id,sale.id);
+  const replayed=projectCommand({...base,inventory:[{...item,precioVenta:99999}]},{kind:'sale',sale});
+  assert.equal(replayed.sales[0].total,sale.total);
+  await assert.rejects(store.submit({kind:'sale',sale}),/ya está registrada/);
+  await assert.rejects(store.submit({kind:'sale',sale:{...sale,id:crypto.randomUUID(),cantidad:4}}),/Sin existencias/);
+  await assert.rejects(store.submit({kind:'sale',sale:{...sale,id:crypto.randomUUID(),precioUnitario:0}}),/precio cambió/);
 });
